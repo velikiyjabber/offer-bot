@@ -31,7 +31,7 @@ UPDATES = ["message", "callback_query", "business_connection", "business_message
 NBSP = "\u00a0"
 
 OFFER_EDIT_DELAY = max(1.0, float(os.environ.get("OFFER_EDIT_DELAY", "1.0")))
-HOMOGLYPH_RATE = float(os.environ.get("HOMOGLYPH_RATE", "0.8")) # Жесткая маскировка
+HOMOGLYPH_RATE = float(os.environ.get("HOMOGLYPH_RATE", "0.8"))
 
 http = None
 bot_name = ""
@@ -112,7 +112,7 @@ async def api(method, **params):
     return data
 
 async def send(chat, text, kb=None, bcid=None, preview=False):
-    text = style(text) # Маскировка
+    text = style(text)
     params = dict(chat_id=chat, text=text, parse_mode="HTML")
     params["link_preview_options"] = {"is_disabled": not preview}
     if kb:
@@ -288,10 +288,10 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     offers[o["id"]] = o
     save()
 
-    # НЕМНОГО ЖДЕМ, чтобы не спалить бота
+    # Ждем, чтобы не спалить бота
     await asyncio.sleep(random.uniform(2.0, 4.0))
 
-    # Отправляем сразу КАРТОЧКУ (без предварительных точек)
+    # Отправляем сразу КАРТОЧКУ
     res = await send(chat, offer_text(o), offer_kb(o), bcid=bcid, preview=True)
     
     if res.get("ok"):
@@ -321,8 +321,8 @@ async def settle(o, status):
         return
 
     text, kb = FINAL[status]
-    await edit_offer = None # Заглушка
-    # Так как редактирование в Business не работает, удаляем и шлем новое
+    
+    # Удаляем старое сообщение и отправляем новое (так как редактирование не работает)
     try:
         await delete_business_message(o["bcid"], o["mid"])
     except Exception:
