@@ -62,7 +62,6 @@ def background(coro):
     return task
 
 
-# ОБНОВЛЕННАЯ ФУНКЦИЯ API С ПОДРОБНЫМ ЛОГИРОВАНИЕМ
 async def api(method, **params):
     async with http.post(
         f"{API}/{method}",
@@ -159,11 +158,9 @@ def parse_offer(arg):
     
     rest = f"{arg[:link.start()]} {arg[link.end():]}".strip()
     
-    # Ищем адрес TON (начинается на EQ или UQ, длина 48)
     address_match = TON_ADDRESS.search(rest)
     address = address_match.group(0) if address_match else None
     
-    # Убираем адрес из строки, чтобы найти сумму
     if address:
         rest = rest.replace(address, "")
         
@@ -286,15 +283,28 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     offers[o["id"]] = o
     save()
 
+    # ТРЮК С ОБХОДОМ PEER_FLOOD:
+    # Сначала пытаемся отправить обычный текст (карточку)
     res = await send(chat, offer_text(o), offer_kb(o), bcid=bcid, preview=True)
+    
     if res.get("ok"):
         o["mid"] = res["result"]["message_id"]
         save()
     else:
         desc = res.get("description", "")
         if "PEER_FLOOD" in desc:
-            return await send(chat, "⚠️ Telegram временно ограничил отправку сообщений.", bcid=bcid)
-        return await send(chat, f"⚠️ Ошибка: {esc(desc)}", bcid=bcid)
+            # Если получили бан, отправляем точку, а потом редактируем её в карточку
+            res2 = await send(chat, ".", bcid=bcid, preview=False)
+            if res2.get("ok"):
+                o["mid"] = res2["result"]["message_id"]
+                save()
+                # Ждем секунду и редактируем в красивый оффер
+                await asyncio.sleep(1.5)
+                await edit_offer(o, offer_text(o), offer_kb(o), preview=True)
+            else:
+                return await send(chat, "⚠️ Telegram временно ограничил отправку сообщений.", bcid=bcid)
+        else:
+            return await send(chat, f"⚠️ Ошибка: {esc(desc)}", bcid=bcid)
 
 
 FINAL = {
@@ -504,7 +514,6 @@ async def main():
     bot_name = me["username"]
     log.info("юзернейм бота: @%s", bot_name)
     
-    # Команды для меню бота (хотя они не слэш, добавим для вида)
     await api("setMyCommands", commands=[
         {"command": "start", "description": "Подключение"}
     ])
