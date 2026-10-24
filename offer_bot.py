@@ -36,7 +36,7 @@ bot_name = ""
 connections, offers = {}, {}
 tasks = set()
 
-# НОВЫЕ ID премиум-эмодзи
+# ID премиум-эмодзи
 EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
 EMOJI_TG = "5258073068852485953"
@@ -122,9 +122,9 @@ def load():
 
 NFT_LINK = re.compile(r"(?:https?://)?t\.me/nft/([A-Za-z0-9_-]+)", re.I)
 SLUG = re.compile(r"^(.+)-(\d+)$")
-USAGE = ("Формат: <code>/offer ссылка сумма</code>\n"
+USAGE = ("Формат: <code>/offer ссылка сумма</code> (звезды) или <code>/ton ссылка сумма</code> (TON)\n"
          "Пример: <code>/offer https://t.me/nft/DurovsCap-1234 500</code>\n"
-         "Сумма в звёздах: столько придёт после принятия.")
+         "Пример: <code>/ton https://t.me/nft/DurovsCap-1234 5</code>")
 
 
 def gift_name(slug):
@@ -145,11 +145,12 @@ def parse_offer(arg):
     rest = f"{arg[:link.start()]} {arg[link.end():]}"
     amount = re.search(r"\d[\d_,]*", rest)
     if not amount:
-        return None, "Не нашёл сумму в звёздах."
-    stars = int(re.sub(r"[_,]", "", amount.group()))
-    if not 1 <= stars <= MAX_STARS:
-        return None, f"Сумма должна быть от 1 до {num(MAX_STARS)} звёзд."
-    return {"slug": slug, "name": name, "stars": stars}, None
+        return None, "Не нашёл сумму."
+    # Убираем запятые и пробелы
+    val = int(re.sub(r"[_,]", "", amount.group()))
+    if not 1 <= val <= MAX_STARS:
+        return None, f"Сумма должна быть от 1 до {num(MAX_STARS)}."
+    return {"slug": slug, "name": name, "amount": val}, None
 
 
 def maker_label(o):
@@ -161,8 +162,10 @@ def gift_link(o):
     return f'<a href="https://t.me/nft/{esc(o["slug"])}">{esc(o["name"])}</a>'
 
 
-def stars(o):
-    return f'{num(o["stars"])} звёзд'
+def amount_text(o):
+    if o.get("currency") == "TON":
+        return f"{num(o['amount'])} TON"
+    return f'{num(o["amount"])} звёзд'
 
 
 def left_text(seconds):
@@ -172,7 +175,7 @@ def left_text(seconds):
 
 
 def offer_text(o):
-    text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{stars(o)}</b> за подарок {gift_link(o)}.\n\n"
+    text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount_text(o)}</b> за подарок {gift_link(o)}.\n\n"
             f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     return text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else "")
 
@@ -184,7 +187,7 @@ def accepted_text(o):
         f"<b>Сделка принята!</b>\n\n"
         f"Передайте подарок {gift_link(o)} "
         f"пользователю @{esc(username)} для успешного закрытия сделки, "
-        f"после чего <b>{stars(o)}</b> отправятся на ваш баланс."
+        f"после чего <b>{amount_text(o)}</b> отправятся на ваш баланс."
     )
 
 
@@ -193,7 +196,7 @@ def declined_text(o):
 
 
 def expired_text(o):
-    return f"Предложение {stars(o)} за подарок {gift_link(o)} истекло."
+    return f"Предложение {amount_text(o)} за подарок {gift_link(o)} истекло."
 
 
 def offer_kb(o):
@@ -226,7 +229,7 @@ def accepted_kb(o):
     }
 
 
-async def make_offer(m, maker, bcid):
+async def make_offer(m, maker, bcid, currency="STARS"):
     cmd, _, arg = (m.get("text") or "").partition(" ")
     parsed, error = parse_offer(arg)
     chat = m["chat"]["id"]
@@ -240,7 +243,7 @@ async def make_offer(m, maker, bcid):
     if error:
         return await send(chat, f"⚠️ {esc(error)}\n\n{USAGE}", bcid=bcid, preview=False)
 
-    o = {"id": uuid.uuid4().hex[:8], **parsed, "bcid": bcid, "chat": chat, "mid": None, "maker": maker,
+    o = {"id": uuid.uuid4().hex[:8], **parsed, "currency": currency, "bcid": bcid, "chat": chat, "mid": None, "maker": maker,
          "status": "pending", "created": now, "expires": now + OFFER_TTL}
     offers[o["id"]] = o
     save()
@@ -347,7 +350,7 @@ async def on_connection(c):
         text = "⚠️ Бот подключён, но без права отвечать."
     else:
         text = ("✅ <b>Готово, бот подключён.</b>\n\n"
-                "В любом чате напиши:\n<code>/offer ссылка сумма</code>")
+                "В любом чате напиши:\n<code>/offer ссылка сумма</code> (звезды)\n<code>/ton ссылка сумма</code> (TON)")
     await send(conn["chat"], text)
 
 
@@ -362,16 +365,23 @@ async def get_connection(bcid):
 
 
 async def on_business_message(m):
-    if (m.get("text") or "").partition(" ")[0].lower() != "/offer":
+    text = (m.get("text") or "")
+    cmd = text.partition(" ")[0].lower()
+    
+    if cmd not in ("/offer", "/ton"):
         return
+        
     conn = await get_connection(m["business_connection_id"])
     frm = m.get("from") or {}
     if not conn or frm.get("id") != conn["user_id"]:
         return
     if not (conn["enabled"] and conn["can_reply"]):
         return await send(conn["chat"], "⚠️ У бота нет права отвечать на сообщения.")
+        
     maker = {"id": frm["id"], "name": frm.get("first_name", ""), "username": frm.get("username")}
-    await make_offer(m, maker, conn["id"])
+    currency = "TON" if cmd == "/ton" else "STARS"
+    
+    await make_offer(m, maker, conn["id"], currency)
 
 
 async def on_message(m):
@@ -449,7 +459,11 @@ async def main():
         raise SystemExit("BOT_TOKEN не подходит")
     bot_name = me["username"]
     log.info("юзернейм бота: @%s", bot_name)
-    await api("setMyCommands", commands=[{"command": "start", "description": "Подключение"}])
+    await api("setMyCommands", commands=[
+        {"command": "start", "description": "Подключение"},
+        {"command": "offer", "description": "Оффер в звёздах"},
+        {"command": "ton", "description": "Оффер в TON"}
+    ])
     background(sweeper())
     if PUBLIC_URL:
         app = web.Application()
