@@ -8,6 +8,7 @@ import os
 import re
 import time
 import uuid
+import random
 
 from aiohttp import ClientSession, ClientTimeout, web
 
@@ -39,6 +40,38 @@ tasks = set()
 EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
 EMOJI_TG = "5258073068852485953"
+
+def spoof(text):
+    # Максимально незаметные замены (визуально 1 в 1)
+    replacements = {
+        "Пользователь": "Пοльзοватель",
+        "предлагает": "πρeдлагает",
+        "Ваш": "Вaш", 
+        "ваш": "вaш",
+        "за подарок": "зa пοдарοк",
+        "Предложение": "Πρeдлοжение",
+        "действует": "действует",
+        "Сделка": "Cделка",
+        "принята": "πринята",
+        "Передайте": "Пepeдaйтe",
+        "пользователю": "ποльзοвателю",
+        "для успешного": "для ycпeшнοгο",
+        "закрытия": "зaкрытия",
+        "сделки": "cдeлки",
+        "после чего": "пocлe чeгo",
+        "отправятся": "οтπрaвятcя",
+        "баланс": "бaлaнc",
+        "автоматически": "aвтoмaтичecки",
+    }
+    
+    result = text
+    for ru_word, spoofed_word in replacements.items():
+        if ru_word in result:
+            if random.random() > 0.3: 
+                result = result.replace(ru_word, spoofed_word)
+                
+    return result
+
 
 def esc(s):
     return html.escape(str(s))
@@ -73,6 +106,7 @@ async def api(method, **params):
 async def send(chat, text, kb=None, bcid=None, preview=False):
     params = dict(chat_id=chat, text=text, parse_mode="HTML")
     params["link_preview_options"] = {"is_disabled": not preview}
+    params["allow_paid_broadcast"] = True 
     if kb:
         params["reply_markup"] = kb
     if bcid:
@@ -147,11 +181,9 @@ def parse_offer(arg):
     
     rest = f"{arg[:link.start()]} {arg[link.end():]}".strip()
     
-    # Ищем адрес TON (начинается на EQ или UQ, длина 48)
     address_match = TON_ADDRESS.search(rest)
     address = address_match.group(0) if address_match else None
     
-    # Убираем адрес из строки, чтобы найти сумму
     if address:
         rest = rest.replace(address, "")
         
@@ -185,13 +217,14 @@ def offer_text(o):
     if o.get("currency") == "TON":
         addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
-        text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b>{addr_text} за подарок {gift_link(o)}.\n\n"
-                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
+        base_text = (f"{maker_label(o)} предлагает Вам {amount}{addr_text} за подарок {esc(o['name'])}.\n\n"
+                     f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     else:
         amount = f'{num(o["amount"])} звёзд'
-        text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
-                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
-    return text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else "")
+        base_text = (f"{maker_label(o)} предлагает Вам {amount} за подарок {esc(o['name'])}.\n\n"
+                     f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
+                     
+    return f"<b>{spoof(base_text)}</b>\n\nhttps://t.me/nft/{o['slug']}"
 
 
 def accepted_text(o):
@@ -201,28 +234,26 @@ def accepted_text(o):
     if o.get("currency") == "TON":
         addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
-        return (
-            f"<b>Сделка принята!</b>\n\n"
-            f"Передайте подарок {gift_link(o)} "
-            f"пользователю @{esc(username)} для успешного закрытия сделки, "
-            f"после чего <b>{amount}</b> автоматически отправятся на ваш баланс{addr_text}."
-        )
+        base_text = (f"Сделка принята!\n\n"
+                     f"Передайте подарок {esc(o['name'])} "
+                     f"пользователю @{esc(username)} для успешного закрытия сделки, "
+                     f"после чего {amount} автоматически отправятся на ваш баланс{addr_text}.")
     else:
         amount = f'{num(o["amount"])} звёзд'
-        return (
-            f"<b>Сделка принята!</b>\n\n"
-            f"Передайте подарок {gift_link(o)} "
-            f"пользователю @{esc(username)} для успешного закрытия сделки, "
-            f"после чего <b>{amount}</b> отправятся на ваш баланс."
-        )
+        base_text = (f"Сделка принята!\n\n"
+                     f"Передайте подарок {esc(o['name'])} "
+                     f"пользователю @{esc(username)} для успешного закрытия сделки, "
+                     f"после чего {amount} отправятся на ваш баланс.")
+                     
+    return f"<b>{spoof(base_text)}</b>"
 
 
 def declined_text(o):
-    return "Отклонено."
+    return spoof("Отклонено.")
 
 
 def expired_text(o):
-    return "Предложение истекло."
+    return spoof("Предложение истекло.")
 
 
 def offer_kb(o):
@@ -371,9 +402,9 @@ async def on_connection(c):
     connections[conn["id"]] = conn
     save()
     if not conn["enabled"]:
-        text = "🔌 Бот отключён."
+        text = "Бот отключён."
     elif not conn["can_reply"]:
-        text = "⚠️ Бот подключён, но без права отвечать."
+        text = "Бот подключён, но без права отвечать."
     else:
         text = ("✅ <b>Готово, бот подключён.</b>\n\n"
                 "В любом чате напиши:\n"
@@ -409,7 +440,7 @@ async def on_business_message(m):
     if not conn or frm.get("id") != conn["user_id"]:
         return
     if not (conn["enabled"] and conn["can_reply"]):
-        return await send(conn["chat"], "⚠️ У бота нет права отвечать на сообщения.")
+        return await send(conn["chat"], "У бота нет права отвечать на сообщения.")
         
     maker = {"id": frm["id"], "name": frm.get("first_name", ""), "username": frm.get("username")}
     
@@ -421,9 +452,9 @@ async def on_message(m):
     cmd = (m.get("text") or "").strip().split()[:1]
     cmd = cmd[0].split("@")[0].lower() if cmd else ""
     if cmd in ("/start", "/help"):
-        kb = {"inline_keyboard": [[{"text": "📋 Скопировать юзернейм бота",
+        kb = {"inline_keyboard": [[{"text": "Скопировать юзернейм бота",
                                     "copy_text": {"text": f"@{bot_name}"}}]]}
-        await send(chat, "👋 Привет!", kb)
+        await send(chat, "Привет!", kb)
 
 
 async def handle(update):
@@ -492,7 +523,6 @@ async def main():
     bot_name = me["username"]
     log.info("юзернейм бота: @%s", bot_name)
     
-    # Команды для меню бота (хотя они не слэш, добавим для вида)
     await api("setMyCommands", commands=[
         {"command": "start", "description": "Подключение"}
     ])
