@@ -36,10 +36,10 @@ bot_name = ""
 connections, offers = {}, {}
 tasks = set()
 
-# ID премиум-эмодзи
-EMOJI_CROSS = "5310175939890552374"
-EMOJI_CHECK = "5307868765063522639"
-EMOJI_TG = "5309812186225350648"
+# НОВЫЕ ID премиум-эмодзи
+EMOJI_CROSS = "5260342697075416641"
+EMOJI_CHECK = "5260416304224936047"
+EMOJI_TG = "5258073068852485953"
 
 def esc(s):
     return html.escape(str(s))
@@ -162,7 +162,6 @@ def gift_link(o):
 
 
 def stars(o):
-    # Убрали эмодзи, оставили просто текст
     return f'{num(o["stars"])} звёзд'
 
 
