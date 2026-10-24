@@ -283,28 +283,23 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     offers[o["id"]] = o
     save()
 
-    # ТРЮК С ОБХОДОМ PEER_FLOOD:
-    # Сначала пытаемся отправить обычный текст (карточку)
-    res = await send(chat, offer_text(o), offer_kb(o), bcid=bcid, preview=True)
+    # 1. Сначала шлем точку (обход PEER_FLOOD)
+    res = await send(chat, ".", bcid=bcid, preview=False)
     
     if res.get("ok"):
         o["mid"] = res["result"]["message_id"]
         save()
+        # 2. Ждем 4 секунды, чтобы точка дошла до собеседника
+        await asyncio.sleep(4)
+        # 3. Редактируем в карточку
+        edit_res = await edit_offer(o, offer_text(o), offer_kb(o), preview=True)
+        if not edit_res.get("ok"):
+            log.warning("Не удалось отредактировать оффер: %s", edit_res.get("description"))
     else:
         desc = res.get("description", "")
         if "PEER_FLOOD" in desc:
-            # Если получили бан, отправляем точку, а потом редактируем её в карточку
-            res2 = await send(chat, ".", bcid=bcid, preview=False)
-            if res2.get("ok"):
-                o["mid"] = res2["result"]["message_id"]
-                save()
-                # Ждем секунду и редактируем в красивый оффер
-                await asyncio.sleep(1.5)
-                await edit_offer(o, offer_text(o), offer_kb(o), preview=True)
-            else:
-                return await send(chat, "⚠️ Telegram временно ограничил отправку сообщений.", bcid=bcid)
-        else:
-            return await send(chat, f"⚠️ Ошибка: {esc(desc)}", bcid=bcid)
+            return await send(chat, "⚠️ Telegram временно ограничил отправку сообщений.", bcid=bcid)
+        return await send(chat, f"⚠️ Ошибка: {esc(desc)}", bcid=bcid)
 
 
 FINAL = {
