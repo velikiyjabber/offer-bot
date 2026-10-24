@@ -36,6 +36,11 @@ bot_name = ""
 connections, offers = {}, {}
 tasks = set()
 
+# ID премиум-эмодзи
+EMOJI_CROSS = "5310175939890552374"
+EMOJI_CHECK = "5307868765063522639"
+EMOJI_STAR = "5310164622651728748"
+EMOJI_TG = "5309812186225350648"
 
 def esc(s):
     return html.escape(str(s))
@@ -45,8 +50,11 @@ def num(x):
     return f"{x:,}".replace(",", NBSP)
 
 
-def btn(text, data):
-    return {"text": text, "callback_data": data}
+def btn(text, data, icon_id=None):
+    b = {"text": text, "callback_data": data}
+    if icon_id:
+        b["icon_custom_emoji_id"] = icon_id
+    return b
 
 
 def background(coro):
@@ -151,12 +159,12 @@ def maker_label(o):
 
 
 def gift_link(o):
-    # Ссылка скрыта под названием подарка
     return f'<a href="https://t.me/nft/{esc(o["slug"])}">{esc(o["name"])}</a>'
 
 
 def stars(o):
-    return f"{num(o['stars'])} звёзд"
+    # Вставляем премиум-эмодзи звезды через HTML-тег
+    return f'{num(o["stars"])} звёзд <tg-emoji emoji-id="{EMOJI_STAR}">⭐</tg-emoji>'
 
 
 def left_text(seconds):
@@ -175,7 +183,7 @@ def accepted_text(o):
     u = o["maker"]
     username = u.get("username") or "пользователя"
     return (
-        f"Сделка принята!\n\n"
+        f"<b>Сделка принята!</b>\n\n"
         f"Передайте подарок {gift_link(o)} "
         f"пользователю @{esc(username)} для успешного закрытия сделки, "
         f"после чего <b>{stars(o)}</b> отправятся на ваш баланс."
@@ -183,15 +191,20 @@ def accepted_text(o):
 
 
 def declined_text(o):
-    return "❌ Отклонено."
+    return "Отклонено."
 
 
 def expired_text(o):
-    return f"⌛ Предложение {stars(o)} за подарок {gift_link(o)} истекло."
+    return f"Предложение {stars(o)} за подарок {gift_link(o)} истекло."
 
 
 def offer_kb(o):
-    return {"inline_keyboard": [[btn("✖ Отклонить", f"of:no:{o['id']}"), btn("✓ Принять", f"of:ok:{o['id']}")]]}
+    return {
+        "inline_keyboard": [[
+            btn("Отклонить", f"of:no:{o['id']}", EMOJI_CROSS),
+            btn("Принять", f"of:ok:{o['id']}", EMOJI_CHECK)
+        ]]
+    }
 
 
 def accepted_kb(o):
@@ -204,8 +217,12 @@ def accepted_kb(o):
     return {
         "inline_keyboard": [
             [
-                {"text": "✖ Отменить", "callback_data": f"of:no:{o['id']}"},
-                {"text": "✓ Передать", "url": transfer_url}
+                btn("Отменить", f"of:cancel:{o['id']}", EMOJI_CROSS),
+                {
+                    "text": "Передать", 
+                    "url": transfer_url,
+                    "icon_custom_emoji_id": EMOJI_TG
+                }
             ]
         ]
     }
@@ -287,8 +304,19 @@ async def on_callback(q):
         
     action = parts[1]
     
+    # Обработка кнопки "Отменить" в меню принятого оффера
+    if action == "cancel":
+        try:
+            await delete_business_message(o["bcid"], o["mid"])
+        except Exception:
+            pass
+        # Меняем статус на declined, чтобы по нему больше нельзя было кликать
+        o["status"] = "declined"
+        save()
+        return await api("answerCallbackQuery", callback_query_id=q["id"])
+    
+    # Обработка "Принять" / "Отклонить" в начальном меню
     if action in ("ok", "no"):
-        # Если нажали кнопку, но статус уже не pending (например, нажали Отменить после Принять)
         if o["status"] != "pending":
             return await api("answerCallbackQuery", callback_query_id=q["id"], text="Сделка уже обработана", show_alert=True)
             
@@ -296,10 +324,8 @@ async def on_callback(q):
             await settle(o, "expired")
             return await api("answerCallbackQuery", callback_query_id=q["id"], text="Срок предложения истёк", show_alert=True)
             
-        # Обрабатываем нажатие
         if action == "ok":
             await settle(o, "accepted")
-            # Без всплывающего окна! Просто убираем "часики" у кнопки
             await api("answerCallbackQuery", callback_query_id=q["id"])
         else:
             await settle(o, "declined")
