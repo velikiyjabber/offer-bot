@@ -134,7 +134,7 @@ def parse_offer(arg):
     slug = link.group(1)
     name = gift_name(slug)
     if not name:
-        return None, "Это не похоже на ссылку на NFT: в конце должен быть номер, например DurovsCap-1234."
+        return None, "Это не похоже на ссылку на NFT: в конце должен быть номер."
     rest = f"{arg[:link.start()]} {arg[link.end():]}"
     amount = re.search(r"\d[\d_,]*", rest)
     if not amount:
@@ -151,11 +151,12 @@ def maker_label(o):
 
 
 def gift_link(o):
+    # Ссылка скрыта под названием подарка
     return f'<a href="https://t.me/nft/{esc(o["slug"])}">{esc(o["name"])}</a>'
 
 
 def stars(o):
-    return f"{num(o['stars'])}{NBSP}⭐"
+    return f"{num(o['stars'])} звёзд"
 
 
 def left_text(seconds):
@@ -165,21 +166,19 @@ def left_text(seconds):
 
 
 def offer_text(o):
-    text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{stars(o)} звёзд</b>\n"
-            f"за подарок {esc(o['name'])}.\n\n"
-            f"Предложение действует ещё {left_text(o['expires'] - time.time())}\n\n"
-            f"https://t.me/nft/{o['slug']}")
+    text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{stars(o)}</b> за подарок {gift_link(o)}.\n\n"
+            f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     return text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else "")
 
 
 def accepted_text(o):
-    # Твой текст при принятии оффера
     u = o["maker"]
     username = u.get("username") or "пользователя"
     return (
-        f"✅ <b>Сделка принята!</b>\n\n"
-        f"Передайте подарок {gift_link(o)} пользователю @{esc(username)} "
-        f"для успешного закрытия сделки, после чего <b>{stars(o)}</b> отправятся на ваш баланс."
+        f"Сделка принята!\n\n"
+        f"Передайте подарок {gift_link(o)} "
+        f"пользователю @{esc(username)} для успешного закрытия сделки, "
+        f"после чего <b>{stars(o)}</b> отправятся на ваш баланс."
     )
 
 
@@ -192,18 +191,16 @@ def expired_text(o):
 
 
 def offer_kb(o):
-    return {"inline_keyboard": [[btn("✕ Отклонить", f"of:no:{o['id']}"), btn("✓ Принять", f"of:ok:{o['id']}")]]}
+    return {"inline_keyboard": [[btn("✖ Отклонить", f"of:no:{o['id']}"), btn("✓ Принять", f"of:ok:{o['id']}")]]}
 
 
 def accepted_kb(o):
     u = o["maker"]
-    # Ссылка на передачу подарка
     if u.get("username"):
         transfer_url = f"tg://send_gift?to={u['username']}"
     else:
         transfer_url = f"tg://user?id={u.get('id', 0)}"
 
-    # Кнопки в один ряд
     return {
         "inline_keyboard": [
             [
@@ -220,7 +217,6 @@ async def make_offer(m, maker, bcid):
     chat = m["chat"]["id"]
     now = time.time()
 
-    # Удаляем команду /offer
     try:
         await delete_business_message(bcid, m["message_id"])
     except Exception:
@@ -229,13 +225,11 @@ async def make_offer(m, maker, bcid):
     if error:
         return await send(chat, f"⚠️ {esc(error)}\n\n{USAGE}", bcid=bcid, preview=False)
 
-    # Создаем оффер
     o = {"id": uuid.uuid4().hex[:8], **parsed, "bcid": bcid, "chat": chat, "mid": None, "maker": maker,
          "status": "pending", "created": now, "expires": now + OFFER_TTL}
     offers[o["id"]] = o
     save()
 
-    # Отправляем карточку (одно сообщение)
     res = await send(chat, offer_text(o), offer_kb(o), bcid=bcid, preview=True)
     if res.get("ok"):
         o["mid"] = res["result"]["message_id"]
@@ -243,9 +237,8 @@ async def make_offer(m, maker, bcid):
     else:
         desc = res.get("description", "")
         if "PEER_FLOOD" in desc:
-            return await send(chat, "⚠️ Telegram временно ограничил отправку сообщений этому аккаунту "
-                                    "(PEER_FLOOD) — это защита от спама.", bcid=bcid)
-        return await send(chat, f"⚠️ Не получилось отправить оффер: {esc(desc)}", bcid=bcid)
+            return await send(chat, "⚠️ Telegram временно ограничил отправку сообщений.", bcid=bcid)
+        return await send(chat, f"⚠️ Ошибка: {esc(desc)}", bcid=bcid)
 
 
 FINAL = {
@@ -256,17 +249,18 @@ FINAL = {
 
 
 async def settle(o, status):
-    # Для "accepted" мы РЕДАКТИРУЕМ сообщение. Для "declined" - УДАЛЯЕМ.
     o["status"] = status
     save()
     
-    if status == "declined":
+    # Если отклонили или истекло время — УДАЛЯЕМ сообщение
+    if status in ("declined", "expired"):
         try:
             await delete_business_message(o["bcid"], o["mid"])
         except Exception:
             pass
         return
 
+    # Если приняли — РЕДАКТИРУЕМ
     text, kb = FINAL[status]
     await edit_offer(o, text(o), kb(o) if kb else None, preview=True)
 
@@ -286,29 +280,30 @@ async def sweeper():
 
 async def on_callback(q):
     parts = q.get("data", "").split(":")
-    note = None
     o = offers.get(parts[2]) if len(parts) == 3 and parts[0] == "of" else None
     
     if o is None:
-        note = "Этот оффер устарел"
-    else:
-        action = parts[1]
-        if action in ("ok", "no"):
-            if o["status"] != "pending":
-                note = "Оффер уже обработан"
-            elif time.time() > o["expires"]:
-                await settle(o, "expired")
-                note = "Срок предложения истёк"
-            else:
-                if action == "ok":
-                    await settle(o, "accepted")
-                    note = "Вы приняли оффер! Передайте подарок."
-                else:
-                    await settle(o, "declined")
-                    note = "Оффер отклонен."
-                    
-    extra = {"text": note, "show_alert": True} if note else {}
-    await api("answerCallbackQuery", callback_query_id=q["id"], **extra)
+        return await api("answerCallbackQuery", callback_query_id=q["id"])
+        
+    action = parts[1]
+    
+    if action in ("ok", "no"):
+        # Если нажали кнопку, но статус уже не pending (например, нажали Отменить после Принять)
+        if o["status"] != "pending":
+            return await api("answerCallbackQuery", callback_query_id=q["id"], text="Сделка уже обработана", show_alert=True)
+            
+        if time.time() > o["expires"]:
+            await settle(o, "expired")
+            return await api("answerCallbackQuery", callback_query_id=q["id"], text="Срок предложения истёк", show_alert=True)
+            
+        # Обрабатываем нажатие
+        if action == "ok":
+            await settle(o, "accepted")
+            # Без всплывающего окна! Просто убираем "часики" у кнопки
+            await api("answerCallbackQuery", callback_query_id=q["id"])
+        else:
+            await settle(o, "declined")
+            await api("answerCallbackQuery", callback_query_id=q["id"])
 
 
 def conn_from(c):
@@ -330,7 +325,7 @@ async def on_connection(c):
     if not conn["enabled"]:
         text = "🔌 Бот отключён."
     elif not conn["can_reply"]:
-        text = "⚠️ Бот подключён, но без права отвечать. Включи право «Отвечать на сообщения»."
+        text = "⚠️ Бот подключён, но без права отвечать."
     else:
         text = ("✅ <b>Готово, бот подключён.</b>\n\n"
                 "В любом чате напиши:\n<code>/offer ссылка сумма</code>")
