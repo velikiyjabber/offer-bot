@@ -359,10 +359,11 @@ def conn_from(c):
     can_reply = bool(rights.get("can_reply", c.get("can_reply")))
     can_delete = bool(rights.get("can_delete_all_messages"))
     user = c["user"]
-    return {"id": c["id"], "user_id": user["id"], "chat": user["user_chat_id"], "name": user.get("first_name", ""),
+    # Берем chat из user_id, если user_chat_id нет
+    chat_id = user.get("id") 
+    return {"id": c["id"], "user_id": user["id"], "chat": chat_id, "name": user.get("first_name", ""),
             "username": user.get("username"), "enabled": c.get("is_enabled", True), "can_reply": can_reply,
             "can_delete": can_delete}
-
 
 async def on_connection(c):
     conn = conn_from(c)
