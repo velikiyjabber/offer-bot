@@ -39,7 +39,6 @@ tasks = set()
 # ID премиум-эмодзи
 EMOJI_CROSS = "5310175939890552374"
 EMOJI_CHECK = "5307868765063522639"
-EMOJI_STAR = "5310164622651728748"
 EMOJI_TG = "5309812186225350648"
 
 def esc(s):
@@ -163,8 +162,8 @@ def gift_link(o):
 
 
 def stars(o):
-    # Вставляем премиум-эмодзи звезды через HTML-тег
-    return f'{num(o["stars"])} звёзд <tg-emoji emoji-id="{EMOJI_STAR}">⭐</tg-emoji>'
+    # Убрали эмодзи, оставили просто текст
+    return f'{num(o["stars"])} звёзд'
 
 
 def left_text(seconds):
@@ -269,7 +268,6 @@ async def settle(o, status):
     o["status"] = status
     save()
     
-    # Если отклонили или истекло время — УДАЛЯЕМ сообщение
     if status in ("declined", "expired"):
         try:
             await delete_business_message(o["bcid"], o["mid"])
@@ -277,7 +275,6 @@ async def settle(o, status):
             pass
         return
 
-    # Если приняли — РЕДАКТИРУЕМ
     text, kb = FINAL[status]
     await edit_offer(o, text(o), kb(o) if kb else None, preview=True)
 
@@ -304,18 +301,15 @@ async def on_callback(q):
         
     action = parts[1]
     
-    # Обработка кнопки "Отменить" в меню принятого оффера
     if action == "cancel":
         try:
             await delete_business_message(o["bcid"], o["mid"])
         except Exception:
             pass
-        # Меняем статус на declined, чтобы по нему больше нельзя было кликать
         o["status"] = "declined"
         save()
         return await api("answerCallbackQuery", callback_query_id=q["id"])
     
-    # Обработка "Принять" / "Отклонить" в начальном меню
     if action in ("ok", "no"):
         if o["status"] != "pending":
             return await api("answerCallbackQuery", callback_query_id=q["id"], text="Сделка уже обработана", show_alert=True)
