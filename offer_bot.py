@@ -88,21 +88,6 @@ async def edit_offer(o, text, kb=None, preview=True):
     return res
 
 
-async def render_card(o, text, kb, preview=True):
-    """Правит карточку; если edit не прошёл — пересоздаёт сообщение с кнопками."""
-    res = await edit_offer(o, text, kb, preview=preview)
-    if res.get("ok"):
-        return res
-    log.warning("edit упал (%s), пересоздаю карточку %s", res.get("description"), o["id"])
-    res2 = await send(o["chat"], text, kb, o["bcid"], preview=preview)
-    if res2.get("ok"):
-        o["mid"] = res2["result"]["message_id"]
-        save()
-    else:
-        log.error("не удалось пересоздать карточку %s: %s", o["id"], res2.get("description"))
-    return res2
-
-
 def save():
     for oid in sorted(offers, key=lambda k: offers[k]["created"])[:-500]:
         del offers[oid]
@@ -188,31 +173,14 @@ def offer_text(o):
 
 
 def accepted_text(o):
-    # Текст остается тем же, чтобы не вызывать подозрений
-    return offer_text(o)
-
-
-def accepted_kb(o):
+    # Твой текст при принятии оффера
     u = o["maker"]
-    # Ведем в профиль покупателя
-    if u.get("username"):
-        profile_url = f"https://t.me/{u['username']}"
-    else:
-        profile_url = f"tg://user?id={u.get('id', 0)}"
-
-    # Делаем аккуратные кнопки в один ряд
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "👤 Профиль", "url": profile_url},
-                {"text": "✅ Я передал", "callback_data": f"of:done:{o['id']}"}
-            ]
-        ]
-    }
-
-
-def completed_text(o):
-    return f"✅ <b>Сделка завершена!</b>\n\nОжидайте зачисления {stars(o)} в течение {TRANSFER_MIN} мин."
+    username = u.get("username") or "пользователя"
+    return (
+        f"✅ <b>Сделка принята!</b>\n\n"
+        f"Передайте подарок {gift_link(o)} пользователю @{esc(username)} "
+        f"для успешного закрытия сделки, после чего <b>{stars(o)}</b> отправятся на ваш баланс."
+    )
 
 
 def declined_text(o):
@@ -227,85 +195,80 @@ def offer_kb(o):
     return {"inline_keyboard": [[btn("✕ Отклонить", f"of:no:{o['id']}"), btn("✓ Принять", f"of:ok:{o['id']}")]]}
 
 
+def accepted_kb(o):
+    u = o["maker"]
+    # Ссылка на передачу подарка
+    if u.get("username"):
+        transfer_url = f"tg://send_gift?to={u['username']}"
+    else:
+        transfer_url = f"tg://user?id={u.get('id', 0)}"
+
+    # Кнопки в один ряд
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "✖ Отменить", "callback_data": f"of:no:{o['id']}"},
+                {"text": "✓ Передать", "url": transfer_url}
+            ]
+        ]
+    }
+
+
 async def make_offer(m, maker, bcid):
     cmd, _, arg = (m.get("text") or "").partition(" ")
     parsed, error = parse_offer(arg)
     chat = m["chat"]["id"]
     now = time.time()
 
-    # 1. Отправляем временное сообщение
-    res = await send(chat, "⏳ Готовлю оффер…", bcid=bcid, preview=False)
-    if not res.get("ok"):
-        desc = res.get("description", "")
-        try:
-            await delete_business_message(bcid, m["message_id"])
-        except Exception:
-            pass
-        if "PEER_FLOOD" in desc:
-            return await send(chat, "⚠️ Telegram временно ограничил отправку сообщений этому аккаунту "
-                                    "(PEER_FLOOD) — это защита от спама.", bcid=bcid)
-        return await send(chat, f"⚠️ Не получилось отправить оффер: {esc(desc)}", bcid=bcid)
-
-    temp_mid = res["result"]["message_id"]
-
-    # 2. Удаляем команду /offer
+    # Удаляем команду /offer
     try:
         await delete_business_message(bcid, m["message_id"])
-    except Exception:
-        log.exception("не удалось удалить команду")
-
-    # 3. Удаляем временное сообщение
-    try:
-        await delete_business_message(bcid, temp_mid)
     except Exception:
         pass
 
     if error:
         return await send(chat, f"⚠️ {esc(error)}\n\n{USAGE}", bcid=bcid, preview=False)
 
-    # 4. Создаем оффер
+    # Создаем оффер
     o = {"id": uuid.uuid4().hex[:8], **parsed, "bcid": bcid, "chat": chat, "mid": None, "maker": maker,
          "status": "pending", "created": now, "expires": now + OFFER_TTL}
     offers[o["id"]] = o
     save()
 
-    # 5. Отправляем карточку
-    res2 = await send(chat, offer_text(o), offer_kb(o), bcid=bcid, preview=True)
-    if res2.get("ok"):
-        o["mid"] = res2["result"]["message_id"]
+    # Отправляем карточку (одно сообщение)
+    res = await send(chat, offer_text(o), offer_kb(o), bcid=bcid, preview=True)
+    if res.get("ok"):
+        o["mid"] = res["result"]["message_id"]
         save()
+    else:
+        desc = res.get("description", "")
+        if "PEER_FLOOD" in desc:
+            return await send(chat, "⚠️ Telegram временно ограничил отправку сообщений этому аккаунту "
+                                    "(PEER_FLOOD) — это защита от спама.", bcid=bcid)
+        return await send(chat, f"⚠️ Не получилось отправить оффер: {esc(desc)}", bcid=bcid)
 
 
 FINAL = {
     "accepted": (accepted_text, accepted_kb), 
-    "completed": (completed_text, None),
     "declined": (declined_text, None), 
     "expired": (expired_text, None)
 }
 
 
 async def settle(o, status):
-    text, kb = FINAL[status]
+    # Для "accepted" мы РЕДАКТИРУЕМ сообщение. Для "declined" - УДАЛЯЕМ.
     o["status"] = status
     save()
     
-    # Удаляем старое сообщение
-    try:
-        await delete_business_message(o["bcid"], o["mid"])
-    except Exception:
-        pass
-        
-    # Отправляем новое сообщение с нужным статусом
-    if status in ("accepted", "completed"):
-        # Для accepted и completed используем preview=True (чтобы картинка осталась)
-        res = await send(o["chat"], text(o), kb(o) if kb else None, bcid=o["bcid"], preview=True)
-    else:
-        # Для declined и expired можно без превью
-        res = await send(o["chat"], text(o), kb(o) if kb else None, bcid=o["bcid"], preview=False)
+    if status == "declined":
+        try:
+            await delete_business_message(o["bcid"], o["mid"])
+        except Exception:
+            pass
+        return
 
-    if res.get("ok"):
-        o["mid"] = res["result"]["message_id"]
-        save()
+    text, kb = FINAL[status]
+    await edit_offer(o, text(o), kb(o) if kb else None, preview=True)
 
 
 async def sweeper():
@@ -317,38 +280,33 @@ async def sweeper():
             try:
                 if o["expires"] < time.time():
                     await settle(o, "expired")
-                else:
-                    await render_card(o, offer_text(o), offer_kb(o), preview=True)
             except Exception:
-                log.exception("тик оффера %s", o["id"])
+                pass
 
 
 async def on_callback(q):
     parts = q.get("data", "").split(":")
     note = None
     o = offers.get(parts[2]) if len(parts) == 3 and parts[0] == "of" else None
+    
     if o is None:
         note = "Этот оффер устарел"
     else:
         action = parts[1]
-        if action == "done":
-            if o["status"] == "accepted":
-                await settle(o, "completed")
-                note = "Отлично! Ожидайте зачисления звезд."
-            else:
-                note = "Сначала примите оффер."
-        elif STRICT and q["from"]["id"] == o["maker"]["id"] and action in ("ok", "no"):
-            note = "Это твой оффер: отвечать на него должен получатель"
-        elif action in ("ok", "no"):
+        if action in ("ok", "no"):
             if o["status"] != "pending":
                 note = "Оффер уже обработан"
             elif time.time() > o["expires"]:
                 await settle(o, "expired")
                 note = "Срок предложения истёк"
             else:
-                await settle(o, "accepted" if action == "ok" else "declined")
                 if action == "ok":
-                    note = "Вы приняли оффер! Передайте подарок для получения звезд."
+                    await settle(o, "accepted")
+                    note = "Вы приняли оффер! Передайте подарок."
+                else:
+                    await settle(o, "declined")
+                    note = "Оффер отклонен."
+                    
     extra = {"text": note, "show_alert": True} if note else {}
     await api("answerCallbackQuery", callback_query_id=q["id"], **extra)
 
@@ -359,26 +317,23 @@ def conn_from(c):
     can_reply = bool(rights.get("can_reply", c.get("can_reply")))
     can_delete = bool(rights.get("can_delete_all_messages"))
     user = c["user"]
-    # Берем chat из user_id, если user_chat_id нет
     chat_id = user.get("id") 
     return {"id": c["id"], "user_id": user["id"], "chat": chat_id, "name": user.get("first_name", ""),
             "username": user.get("username"), "enabled": c.get("is_enabled", True), "can_reply": can_reply,
             "can_delete": can_delete}
+
 
 async def on_connection(c):
     conn = conn_from(c)
     connections[conn["id"]] = conn
     save()
     if not conn["enabled"]:
-        text = "🔌 Бот отключён от профиля. Подключить снова: Настройки → Телеграм Бизнес → Автоматизация чатов."
+        text = "🔌 Бот отключён."
     elif not conn["can_reply"]:
-        text = ("⚠️ Бот подключён, но без права отвечать на сообщения. Открой Настройки → Телеграм Бизнес → "
-                "Автоматизация чатов, выбери бота и включи это право — иначе офферы не создадутся.")
+        text = "⚠️ Бот подключён, но без права отвечать. Включи право «Отвечать на сообщения»."
     else:
         text = ("✅ <b>Готово, бот подключён.</b>\n\n"
-                "В любом чате напиши:\n<code>/offer ссылка сумма</code>\n"
-                "Например: <code>/offer https://t.me/nft/DurovsCap-1234 500</code>\n\n"
-                "Сообщение тут же превратится в карточку оффера с кнопками.")
+                "В любом чате напиши:\n<code>/offer ссылка сумма</code>")
     await send(conn["chat"], text)
 
 
@@ -400,8 +355,7 @@ async def on_business_message(m):
     if not conn or frm.get("id") != conn["user_id"]:
         return
     if not (conn["enabled"] and conn["can_reply"]):
-        return await send(conn["chat"], "⚠️ У бота нет права отвечать на сообщения, оффер не создан. "
-                                        "Включи его: Настройки → Телеграм Бизнес → Автоматизация чатов.")
+        return await send(conn["chat"], "⚠️ У бота нет права отвечать на сообщения.")
     maker = {"id": frm["id"], "name": frm.get("first_name", ""), "username": frm.get("username")}
     await make_offer(m, maker, conn["id"])
 
@@ -480,7 +434,7 @@ async def main():
     if not me:
         raise SystemExit("BOT_TOKEN не подходит")
     bot_name = me["username"]
-    log.info("юзернейм бота: @%s (https://t.me/%s)", bot_name, bot_name)
+    log.info("юзернейм бота: @%s", bot_name)
     await api("setMyCommands", commands=[{"command": "start", "description": "Подключение"}])
     background(sweeper())
     if PUBLIC_URL:
