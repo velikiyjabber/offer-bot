@@ -27,7 +27,6 @@ OFFER_TTL = int(float(os.environ.get("OFFER_HOURS", 6)) * 3600)
 TRANSFER_MIN = int(os.environ.get("TRANSFER_MINUTES", 10))
 STRICT = os.environ.get("OFFER_STRICT") == "1"
 MAX_STARS = 100_000_000
-MAX_TON = 1_000_000
 UPDATES = ["message", "callback_query", "business_connection", "business_message"]
 NBSP = "\u00a0"
 
@@ -43,7 +42,7 @@ EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
 EMOJI_TG = "5258073068852485953"
 
-# ============ HOMOGLYPH STYLE ============
+# ============ HOMOGLYPH STYLE (От друга) ============
 _HOMOGLYPH = {
     "а": ["a", "α"], "с": ["c"], "е": ["e"], "о": ["o", "ο"],
     "р": ["p", "ρ"], "х": ["x"], "у": ["y"], "к": ["κ"],
@@ -82,7 +81,7 @@ def style(text: str) -> str:
     out.append(_style_plain(tail) if depth == 0 else tail)
     return "".join(out)
 
-# ============ HELPERS ============
+# ============ БАЗОВЫЕ ФУНКЦИИ ============
 
 def esc(s):
     return html.escape(str(s))
@@ -135,19 +134,6 @@ async def edit_offer(o, text, kb=None, preview=True):
         return {"ok": True}
     return res
 
-async def render_card(o, text, kb, preview=True):
-    res = await edit_offer(o, text, kb, preview=preview)
-    if res.get("ok"):
-        return res
-    log.warning("edit упал (%s), пересоздаю карточку %s", res.get("description"), o["id"])
-    res2 = await send(o["chat"], text, kb, o["bcid"], preview=preview)
-    if res2.get("ok"):
-        o["mid"] = res2["result"]["message_id"]
-        save()
-    else:
-        log.error("не удалось пересоздать карточку %s: %s", o["id"], res2.get("description"))
-    return res2
-
 def save():
     for oid in sorted(offers, key=lambda k: offers[k]["created"])[:-500]:
         del offers[oid]
@@ -186,7 +172,7 @@ def gift_name(slug):
         return None
     return f"{re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', m.group(1))} #{m.group(2)}"
 
-def parse_offer(arg, currency="STARS"):
+def parse_offer(arg):
     link = NFT_LINK.search(arg)
     if not link:
         return None, "Не нашёл ссылку на NFT вида https://t.me/nft/DurovsCap-1234"
@@ -197,24 +183,19 @@ def parse_offer(arg, currency="STARS"):
     
     rest = f"{arg[:link.start()]} {arg[link.end():]}".strip()
     
-    address = None
-    if currency == "TON":
-        address_match = TON_ADDRESS.search(rest)
-        address = address_match.group(0) if address_match else None
-        if address:
-            rest = rest.replace(address, "")
-        
-    amounts = re.findall(r"\d+", rest)
-    if not amounts:
-        return None, "Не нашёл сумму."
-    if len(amounts) > 1:
-        return None, "Нашёл несколько чисел. Оставь только цену."
-        
-    val = int(amounts[0])
+    address_match = TON_ADDRESS.search(rest)
+    address = address_match.group(0) if address_match else None
     
-    max_val = MAX_TON if currency == "TON" else MAX_STARS
-    if not 1 <= val <= max_val:
-        return None, f"Сумма должна быть от 1 до {num(max_val)}."
+    if address:
+        rest = rest.replace(address, "")
+        
+    amount = re.search(r"\d[\d_,]*", rest)
+    if not amount:
+        return None, "Не нашёл сумму."
+    val = int(re.sub(r"[_,]", "", amount.group()))
+    
+    if not 1 <= val <= MAX_STARS:
+        return None, f"Сумма должна быть от 1 до {num(MAX_STARS)}."
         
     return {"slug": slug, "name": name, "amount": val, "address": address}, None
 
@@ -229,8 +210,6 @@ def left_text(seconds):
     minutes = math.ceil(max(0, seconds) / 60)
     h, m = divmod(minutes, 60)
     return f"{h} ч. {m} мин." if h else f"{m} мин."
-
-# ============ ТЕКСТЫ ============
 
 def offer_text(o):
     if o.get("currency") == "TON":
@@ -272,13 +251,13 @@ def declined_text(o):
 def expired_text(o):
     return "Предложение истекло."
 
-# ============ КЛАВИАТУРЫ ============
-
 def offer_kb(o):
-    return {"inline_keyboard": [[
-        btn("Отклонить", f"of:no:{o['id']}", EMOJI_CROSS),
-        btn("Принять", f"of:ok:{o['id']}", EMOJI_CHECK)
-    ]]}
+    return {
+        "inline_keyboard": [[
+            btn("Отклонить", f"of:no:{o['id']}", EMOJI_CROSS),
+            btn("Принять", f"of:ok:{o['id']}", EMOJI_CHECK)
+        ]]
+    }
 
 def accepted_kb(o):
     u = o["maker"]
@@ -287,17 +266,23 @@ def accepted_kb(o):
     else:
         transfer_url = f"tg://user?id={u.get('id', 0)}"
 
-    return {"inline_keyboard": [[
-        btn("Отменить", f"of:cancel:{o['id']}", EMOJI_CROSS),
-        {"text": "Передать", "url": transfer_url, "icon_custom_emoji_id": EMOJI_TG}
-    ]]}
-
-# ============ ЛОГИКА ============
+    return {
+        "inline_keyboard": [
+            [
+                btn("Отменить", f"of:cancel:{o['id']}", EMOJI_CROSS),
+                {
+                    "text": "Передать", 
+                    "url": transfer_url,
+                    "icon_custom_emoji_id": EMOJI_TG
+                }
+            ]
+        ]
+    }
 
 async def make_offer(m, maker, bcid, currency="STARS"):
     cmd, _, arg = (m.get("text") or "").partition(" ")
-    parsed, error = parse_offer(arg, currency)
-    chat = m["chat"]["id"] 
+    parsed, error = parse_offer(arg)
+    chat = m["chat"]["id"]
     now = time.time()
 
     try:
@@ -308,21 +293,19 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     if error:
         return await send(chat, f"⚠️ {esc(error)}\n\n{USAGE}", bcid=bcid, preview=False)
 
-    o = {"id": uuid.uuid4().hex[:8], **parsed, "currency": currency, "bcid": bcid, "chat": chat, "mid": None, 
-         "maker": maker, "status": "pending", "created": now, "expires": now + OFFER_TTL}
+    o = {"id": uuid.uuid4().hex[:8], **parsed, "currency": currency, "bcid": bcid, "chat": chat, "mid": None, "maker": maker,
+         "status": "pending", "created": now, "expires": now + OFFER_TTL}
     offers[o["id"]] = o
     save()
 
-    # Отправляем СРАЗУ КАРТОЧКУ (как в коде друга)
     res = await send(chat, offer_text(o), offer_kb(o), bcid=bcid, preview=True)
     if res.get("ok"):
         o["mid"] = res["result"]["message_id"]
         save()
     else:
         desc = res.get("description", "")
-        if "PEER_FLOOD" in desc:
-            return await send(chat, "⚠️ Telegram временно ограничил отправку сообщений.", bcid=bcid)
-        return await send(chat, f"⚠️ Ошибка: {esc(desc)}", bcid=bcid)
+        if "PEER_FLOOD" not in desc:
+            log.error(f"Ошибка при создании оффера: {desc}")
 
 FINAL = {
     "accepted": (accepted_text, accepted_kb), 
@@ -342,7 +325,7 @@ async def settle(o, status):
         return
 
     text, kb = FINAL[status]
-    await render_card(o, text(o), kb(o) if kb else None, preview=True)
+    await edit_offer(o, text(o), kb(o) if kb else None, preview=True)
 
 async def sweeper():
     while True:
