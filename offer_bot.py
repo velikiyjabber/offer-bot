@@ -272,6 +272,8 @@ def declined_text(o):
 def expired_text(o):
     return "Предложение истекло."
 
+# ============ КЛАВИАТУРЫ ============
+
 def offer_kb(o):
     return {"inline_keyboard": [[
         btn("Отклонить", f"of:no:{o['id']}", EMOJI_CROSS),
@@ -311,6 +313,7 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     offers[o["id"]] = o
     save()
 
+    # Отправляем СРАЗУ КАРТОЧКУ (как в коде друга)
     res = await send(chat, offer_text(o), offer_kb(o), bcid=bcid, preview=True)
     if res.get("ok"):
         o["mid"] = res["result"]["message_id"]
