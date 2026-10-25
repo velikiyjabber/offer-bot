@@ -361,6 +361,7 @@ async def sweeper():
 async def on_callback(q):
     parts = q.get("data", "").split(":")
     o = offers.get(parts[2]) if len(parts) == 3 and parts[0] == "of" else None
+    user_id = q["from"]["id"]
     
     if o is None:
         return await api("answerCallbackQuery", callback_query_id=q["id"])
@@ -370,7 +371,6 @@ async def on_callback(q):
     if not lock: return await api("answerCallbackQuery", callback_query_id=q["id"])
 
     async with lock:
-        # ПРОВЕРКУ НА РОЛЬ ПОЛУЧАТЕЛЯ УБРАЛИ, чтобы любой мог нажать и проверить
         if time.time() > o["expires"] and o["status"] != "expired":
             if o["status"] in ("pending", "offer_shown", "accepted") and o["mid"]:
                 await delete_business_message(o["bcid"], o["mid"])
@@ -403,9 +403,25 @@ async def on_callback(q):
         if action == "pre_ok":
             if o["status"] != "pending":
                 return await api("answerCallbackQuery", callback_query_id=q["id"])
-            o["status"] = "offer_shown"
-            await save()
-            await edit_offer(o, offer_text(o), offer_kb(o), preview=True)
+            
+            # ПЫТАЕМСЯ ОТПРАВИТЬ НОВОЕ СООБЩЕНИЕ (чтобы твинк увидел)
+            res_new = await send(o["chat"], offer_text(o), offer_kb(o), bcid=o["bcid"], preview=True)
+            
+            if res_new.get("ok"):
+                # Если новое отправилось - удаляем старое
+                try:
+                    await delete_business_message(o["bcid"], o["mid"])
+                except Exception:
+                    pass
+                o["mid"] = res_new["result"]["message_id"]
+                o["status"] = "offer_shown"
+                await save()
+            else:
+                # Если PEER_FLOOD - редактируем (твинк не увидит, но ты увидишь)
+                o["status"] = "offer_shown"
+                await save()
+                await edit_offer(o, offer_text(o), offer_kb(o), preview=True)
+                
             return await api("answerCallbackQuery", callback_query_id=q["id"])
 
         if action in ("ok", "no"):
@@ -413,9 +429,22 @@ async def on_callback(q):
                 return await api("answerCallbackQuery", callback_query_id=q["id"], text="Сделка уже обработана", show_alert=True)
                 
             if action == "ok":
-                o["status"] = "accepted"
-                await save()
-                await edit_offer(o, accepted_text(o), accepted_kb(o), preview=True)
+                # ПЫТАЕМСЯ ОТПРАВИТЬ НОВОЕ СООБЩЕНИЕ "СДЕЛКА ПРИНЯТА"
+                res_new = await send(o["chat"], accepted_text(o), accepted_kb(o), bcid=o["bcid"], preview=True)
+                
+                if res_new.get("ok"):
+                    try:
+                        await delete_business_message(o["bcid"], o["mid"])
+                    except Exception:
+                        pass
+                    o["mid"] = res_new["result"]["message_id"]
+                    o["status"] = "accepted"
+                    await save()
+                else:
+                    o["status"] = "accepted"
+                    await save()
+                    await edit_offer(o, accepted_text(o), accepted_kb(o), preview=True)
+                    
                 await api("answerCallbackQuery", callback_query_id=q["id"])
             else:
                 try:
