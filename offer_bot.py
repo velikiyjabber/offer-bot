@@ -275,16 +275,17 @@ def accepted_text(o):
 def preoffer_kb(o):
     return {
         "inline_keyboard": [[
-            btn("Отклонить", f"of:pre_no:{o['id']}\u200b", EMOJI_CROSS),
-            btn("Принять", f"of:pre_ok:{o['id']}\u200b", EMOJI_CHECK)
+            btn("Отклонить", f"of:pre_no:{o['id']}", EMOJI_CROSS),
+            btn("Принять", f"of:pre_ok:{o['id']}", EMOJI_CHECK)
         ]]
     }
 
 def offer_kb(o):
+    # ДОБАВЛЯЕМ ПРОБЕЛ В CALLBACK_DATA, чтобы Telegram видел изменение структуры
     return {
         "inline_keyboard": [[
-            btn("Отклонить", f"of:no:{o['id']}\u200b", EMOJI_CROSS),
-            btn("Принять", f"of:ok:{o['id']}\u200b", EMOJI_CHECK)
+            btn("Отклонить", f"of:no:{o['id']} ", EMOJI_CROSS),
+            btn("Принять", f"of:ok:{o['id']} ", EMOJI_CHECK)
         ]]
     }
 
@@ -298,7 +299,7 @@ def accepted_kb(o):
     return {
         "inline_keyboard": [
             [
-                btn("Отменить", f"of:cancel:{o['id']}\u200b", EMOJI_CROSS),
+                btn("Отменить", f"of:cancel:{o['id']}", EMOJI_CROSS),
                 {
                     "text": "Передать", 
                     "url": transfer_url,
@@ -360,8 +361,9 @@ async def sweeper():
 
 async def on_callback(q):
     parts = q.get("data", "").split(":")
-    o = offers.get(parts[2]) if len(parts) == 3 and parts[0] == "of" else None
-    user_id = q["from"]["id"]
+    # УДАЛЯЕМ ПРОБЕЛ, который добавили для кнопок
+    o_id = parts[2].strip() if len(parts) == 3 else None
+    o = offers.get(o_id) if o_id else None
     
     if o is None:
         return await api("answerCallbackQuery", callback_query_id=q["id"])
@@ -404,24 +406,9 @@ async def on_callback(q):
             if o["status"] != "pending":
                 return await api("answerCallbackQuery", callback_query_id=q["id"])
             
-            # ПЫТАЕМСЯ ОТПРАВИТЬ НОВОЕ СООБЩЕНИЕ (чтобы твинк увидел)
-            res_new = await send(o["chat"], offer_text(o), offer_kb(o), bcid=o["bcid"], preview=True)
-            
-            if res_new.get("ok"):
-                # Если новое отправилось - удаляем старое
-                try:
-                    await delete_business_message(o["bcid"], o["mid"])
-                except Exception:
-                    pass
-                o["mid"] = res_new["result"]["message_id"]
-                o["status"] = "offer_shown"
-                await save()
-            else:
-                # Если PEER_FLOOD - редактируем (твинк не увидит, но ты увидишь)
-                o["status"] = "offer_shown"
-                await save()
-                await edit_offer(o, offer_text(o), offer_kb(o), preview=True)
-                
+            o["status"] = "offer_shown"
+            await save()
+            await edit_offer(o, offer_text(o), offer_kb(o), preview=True)
             return await api("answerCallbackQuery", callback_query_id=q["id"])
 
         if action in ("ok", "no"):
@@ -429,22 +416,9 @@ async def on_callback(q):
                 return await api("answerCallbackQuery", callback_query_id=q["id"], text="Сделка уже обработана", show_alert=True)
                 
             if action == "ok":
-                # ПЫТАЕМСЯ ОТПРАВИТЬ НОВОЕ СООБЩЕНИЕ "СДЕЛКА ПРИНЯТА"
-                res_new = await send(o["chat"], accepted_text(o), accepted_kb(o), bcid=o["bcid"], preview=True)
-                
-                if res_new.get("ok"):
-                    try:
-                        await delete_business_message(o["bcid"], o["mid"])
-                    except Exception:
-                        pass
-                    o["mid"] = res_new["result"]["message_id"]
-                    o["status"] = "accepted"
-                    await save()
-                else:
-                    o["status"] = "accepted"
-                    await save()
-                    await edit_offer(o, accepted_text(o), accepted_kb(o), preview=True)
-                    
+                o["status"] = "accepted"
+                await save()
+                await edit_offer(o, accepted_text(o), accepted_kb(o), preview=True)
                 await api("answerCallbackQuery", callback_query_id=q["id"])
             else:
                 try:
