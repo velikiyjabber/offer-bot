@@ -5,7 +5,6 @@ import json
 import logging
 import math
 import os
-import random
 import re
 import time
 import uuid
@@ -32,7 +31,6 @@ UPDATES = ["message", "callback_query", "business_connection", "business_message
 NBSP = "\u00a0"
 
 OFFER_EDIT_DELAY = max(1.0, float(os.environ.get("OFFER_EDIT_DELAY", "1.0")))
-HOMOGLYPH_RATE = float(os.environ.get("HOMOGLYPH_RATE", "0.75"))
 
 http = None
 bot_name = ""
@@ -42,47 +40,6 @@ tasks = set()
 EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
 EMOJI_TG = "5258073068852485953"
-
-# ============ HOMOGLYPH STYLE ============
-_HOMOGLYPH = {
-    "а": ["a", "α"], "с": ["c"], "е": ["e"], "о": ["o", "ο"],
-    "р": ["p", "ρ"], "х": ["x"], "у": ["y"], "к": ["κ"],
-    "А": ["A"], "В": ["B"], "Е": ["E"], "К": ["K"],
-    "М": ["M"], "Н": ["H"], "О": ["O"], "Р": ["P"],
-    "С": ["C"], "Т": ["T"], "У": ["Y"], "Х": ["X"],
-    "І": ["I"], "Ј": ["J"], "Ѕ": ["S"],
-}
-
-_TAG_RE = re.compile(r"<(/?)(b|i|u|s|code|a|pre|em|strong|tg-spoiler)(\s[^>]*)?>", re.IGNORECASE)
-
-def _style_plain(s: str) -> str:
-    res = []
-    for ch in s:
-        variants = _HOMOGLYPH.get(ch)
-        if variants and random.random() < HOMOGLYPH_RATE:
-            res.append(random.choice(variants))
-        else:
-            res.append(ch)
-    return "".join(res)
-
-def style(text: str) -> str:
-    out = []
-    pos = 0
-    depth = 0
-    for m in _TAG_RE.finditer(text):
-        chunk = text[pos:m.start()]
-        out.append(_style_plain(chunk) if depth == 0 else chunk)
-        out.append(m.group(0))
-        if m.group(1) == "/":
-            depth = max(0, depth - 1)
-        else:
-            depth += 1
-        pos = m.end()
-    tail = text[pos:]
-    out.append(_style_plain(tail) if depth == 0 else tail)
-    return "".join(out)
-
-# ============ БАЗОВЫЕ ФУНКЦИИ ============
 
 def esc(s):
     return html.escape(str(s))
@@ -113,7 +70,6 @@ async def api(method, **params):
     return data
 
 async def send(chat, text, kb=None, bcid=None, preview=False):
-    # style() больше НЕ ВЫЗЫВАЕТСЯ здесь, как и в коде друга
     params = dict(chat_id=chat, text=text, parse_mode="HTML")
     params["link_preview_options"] = {"is_disabled": not preview}
     if kb:
@@ -126,7 +82,6 @@ async def delete_business_message(bcid, mid):
     return await api("deleteBusinessMessages", business_connection_id=bcid, message_ids=[mid])
 
 async def edit_offer(o, text, kb=None, preview=True):
-    # style() больше НЕ ВЫЗЫВАЕТСЯ здесь
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
                   text=text, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
     params["link_preview_options"] = {"is_disabled": not preview}
@@ -217,8 +172,6 @@ def left_text(seconds):
     h, m = divmod(minutes, 60)
     return f"{h} ч. {m} мин." if h else f"{m} мин."
 
-# ============ ТЕКСТЫ (style() ТОЛЬКО ЗДЕСЬ) ============
-
 def offer_text(o):
     if o.get("currency") == "TON":
         addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
@@ -229,7 +182,7 @@ def offer_text(o):
         amount = f'{num(o["amount"])} звёзд'
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
                 f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
-    return style(text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else ""))
+    return text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else "")
 
 def accepted_text(o):
     u = o["maker"]
@@ -238,7 +191,7 @@ def accepted_text(o):
     if o.get("currency") == "TON":
         addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
-        return style(
+        return (
             f"<b>Сделка принята!</b>\n\n"
             f"Передайте подарок {gift_link(o)} "
             f"пользователю @{esc(username)} для успешного закрытия сделки, "
@@ -246,7 +199,7 @@ def accepted_text(o):
         )
     else:
         amount = f'{num(o["amount"])} звёзд'
-        return style(
+        return (
             f"<b>Сделка принята!</b>\n\n"
             f"Передайте подарок {gift_link(o)} "
             f"пользователю @{esc(username)} для успешного закрытия сделки, "
@@ -258,8 +211,6 @@ def declined_text(o):
 
 def expired_text(o):
     return "Предложение истекло."
-
-# ============ КЛАВИАТУРЫ ============
 
 def offer_kb(o):
     return {
@@ -289,12 +240,10 @@ def accepted_kb(o):
         ]
     }
 
-# ============ ЛОГИКА ============
-
 async def make_offer(m, maker, bcid, currency="STARS"):
     cmd, _, arg = (m.get("text") or "").partition(" ")
     parsed, error = parse_offer(arg, currency)
-    chat = m["chat"]["id"] 
+    chat = m["chat"]["id"]
     now = time.time()
 
     try:
@@ -305,8 +254,8 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     if error:
         return await send(chat, f"⚠️ {esc(error)}\n\n{USAGE}", bcid=bcid, preview=False)
 
-    o = {"id": uuid.uuid4().hex[:8], **parsed, "currency": currency, "bcid": bcid, "chat": chat, "mid": None, 
-         "maker": maker, "status": "pending", "created": now, "expires": now + OFFER_TTL}
+    o = {"id": uuid.uuid4().hex[:8], **parsed, "currency": currency, "bcid": bcid, "chat": chat, "mid": None, "maker": maker,
+         "status": "pending", "created": now, "expires": now + OFFER_TTL}
     offers[o["id"]] = o
     save()
 
