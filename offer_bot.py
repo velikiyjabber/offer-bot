@@ -43,7 +43,7 @@ EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
 EMOJI_TG = "5258073068852485953"
 
-# ============ HOMOGLYPH STYLE (От друга) ============
+# ============ HOMOGLYPH STYLE ============
 _HOMOGLYPH = {
     "а": ["a", "α"], "с": ["c"], "е": ["e"], "о": ["o", "ο"],
     "р": ["p", "ρ"], "х": ["x"], "у": ["y"], "к": ["κ"],
@@ -113,7 +113,7 @@ async def api(method, **params):
     return data
 
 async def send(chat, text, kb=None, bcid=None, preview=False):
-    text = style(text)
+    text = style(text)  # Маскировка перед отправкой
     params = dict(chat_id=chat, text=text, parse_mode="HTML")
     params["link_preview_options"] = {"is_disabled": not preview}
     if kb:
@@ -126,7 +126,7 @@ async def delete_business_message(bcid, mid):
     return await api("deleteBusinessMessages", business_connection_id=bcid, message_ids=[mid])
 
 async def edit_offer(o, text, kb=None, preview=True):
-    text = style(text)
+    text = style(text)  # Маскировка перед редактированием
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
                   text=text, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
     params["link_preview_options"] = {"is_disabled": not preview}
@@ -310,7 +310,6 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     offers[o["id"]] = o
     save()
 
-    # Отправляем сразу карточку, как в рабочем коде друга
     res = await send(chat, offer_text(o), offer_kb(o), bcid=bcid, preview=True)
     if res.get("ok"):
         o["mid"] = res["result"]["message_id"]
