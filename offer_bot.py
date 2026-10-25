@@ -82,7 +82,7 @@ def style(text: str) -> str:
     out.append(_style_plain(tail) if depth == 0 else tail)
     return "".join(out)
 
-# ============ БАЗОВЫЕ ФУНКЦИИ ============
+# ============ HELPERS ============
 
 def esc(s):
     return html.escape(str(s))
