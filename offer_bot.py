@@ -310,6 +310,23 @@ async def make_offer(m, maker, bcid, currency="STARS"):
         if "PEER_FLOOD" not in desc:
             log.error(f"Ошибка при создании оффера: {desc}")
 
+# ВОЗВРАЩАЕМ ФУНКЦИЮ SWEEPER
+async def sweeper():
+    while True:
+        await asyncio.sleep(60)
+        for o in list(offers.values()):
+            if o["status"] != "pending":
+                continue
+            try:
+                if o["expires"] < time.time():
+                    try:
+                        await delete_business_message(o["bcid"], o["mid"])
+                    except Exception:
+                        pass
+                    o["status"] = "expired"
+                    save()
+            except Exception:
+                pass
 
 async def on_callback(q):
     parts = q.get("data", "").split(":")
