@@ -275,16 +275,16 @@ def accepted_text(o):
 def preoffer_kb(o):
     return {
         "inline_keyboard": [[
-            btn("Отклонить", f"of:pre_no:{o['id']}", EMOJI_CROSS),
-            btn("Принять", f"of:pre_ok:{o['id']}", EMOJI_CHECK)
+            btn("Отклонить", f"of:pre_no:{o['id']}\u200b", EMOJI_CROSS),
+            btn("Принять", f"of:pre_ok:{o['id']}\u200b", EMOJI_CHECK)
         ]]
     }
 
 def offer_kb(o):
     return {
         "inline_keyboard": [[
-            btn("Отклонить", f"of:no:{o['id']}", EMOJI_CROSS),
-            btn("Принять", f"of:ok:{o['id']}", EMOJI_CHECK)
+            btn("Отклонить", f"of:no:{o['id']}\u200b", EMOJI_CROSS),
+            btn("Принять", f"of:ok:{o['id']}\u200b", EMOJI_CHECK)
         ]]
     }
 
@@ -298,7 +298,7 @@ def accepted_kb(o):
     return {
         "inline_keyboard": [
             [
-                btn("Отменить", f"of:cancel:{o['id']}", EMOJI_CROSS),
+                btn("Отменить", f"of:cancel:{o['id']}\u200b", EMOJI_CROSS),
                 {
                     "text": "Передать", 
                     "url": transfer_url,
