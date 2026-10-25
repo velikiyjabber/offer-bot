@@ -325,7 +325,7 @@ async def make_offer(m, maker, bcid, currency="STARS"):
         return await send(chat, f"⚠️ {esc(error)}\n\n{USAGE}", bcid=bcid, preview=False)
 
     o = {"id": uuid.uuid4().hex[:8], **parsed, "currency": currency, "bcid": bcid, "chat": chat, "mid": None, 
-         "maker": maker, "recipient_id": chat, "status": "pending", "created": now, "expires": now + OFFER_TTL}
+         "maker": maker, "status": "pending", "created": now, "expires": now + OFFER_TTL}
     offers[o["id"]] = o
     locks[o["id"]] = asyncio.Lock()
     await save()
@@ -361,7 +361,6 @@ async def sweeper():
 async def on_callback(q):
     parts = q.get("data", "").split(":")
     o = offers.get(parts[2]) if len(parts) == 3 and parts[0] == "of" else None
-    user_id = q["from"]["id"]
     
     if o is None:
         return await api("answerCallbackQuery", callback_query_id=q["id"])
@@ -371,9 +370,7 @@ async def on_callback(q):
     if not lock: return await api("answerCallbackQuery", callback_query_id=q["id"])
 
     async with lock:
-        if user_id != o.get("recipient_id"):
-            return await api("answerCallbackQuery", callback_query_id=q["id"], text="Это не ваш оффер", show_alert=True)
-
+        # ПРОВЕРКУ НА РОЛЬ ПОЛУЧАТЕЛЯ УБРАЛИ, чтобы любой мог нажать и проверить
         if time.time() > o["expires"] and o["status"] != "expired":
             if o["status"] in ("pending", "offer_shown", "accepted") and o["mid"]:
                 await delete_business_message(o["bcid"], o["mid"])
