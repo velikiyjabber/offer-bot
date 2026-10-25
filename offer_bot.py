@@ -273,19 +273,19 @@ def accepted_text(o):
 # ============ КЛАВИАТУРЫ ============
 
 def preoffer_kb(o):
+    # МЕНЯЕМ ТЕКСТ КНОПОК, чтобы Telegram видел разницу
     return {
         "inline_keyboard": [[
-            btn("Отклонить", f"of:pre_no:{o['id']}", EMOJI_CROSS),
-            btn("Принять", f"of:pre_ok:{o['id']}", EMOJI_CHECK)
+            btn("Нет, я не хочу", f"of:pre_no:{o['id']}", EMOJI_CROSS),
+            btn("Да, я хочу", f"of:pre_ok:{o['id']}", EMOJI_CHECK)
         ]]
     }
 
 def offer_kb(o):
-    # ДОБАВЛЯЕМ ПРОБЕЛ В CALLBACK_DATA, чтобы Telegram видел изменение структуры
     return {
         "inline_keyboard": [[
-            btn("Отклонить", f"of:no:{o['id']} ", EMOJI_CROSS),
-            btn("Принять", f"of:ok:{o['id']} ", EMOJI_CHECK)
+            btn("Отклонить", f"of:no:{o['id']}", EMOJI_CROSS),
+            btn("Принять", f"of:ok:{o['id']}", EMOJI_CHECK)
         ]]
     }
 
@@ -361,9 +361,7 @@ async def sweeper():
 
 async def on_callback(q):
     parts = q.get("data", "").split(":")
-    # УДАЛЯЕМ ПРОБЕЛ, который добавили для кнопок
-    o_id = parts[2].strip() if len(parts) == 3 else None
-    o = offers.get(o_id) if o_id else None
+    o = offers.get(parts[2]) if len(parts) == 3 and parts[0] == "of" else None
     
     if o is None:
         return await api("answerCallbackQuery", callback_query_id=q["id"])
