@@ -26,17 +26,16 @@ OFFER_TTL = int(float(os.environ.get("OFFER_HOURS", 6)) * 3600)
 TRANSFER_MIN = int(os.environ.get("TRANSFER_MINUTES", 10))
 STRICT = os.environ.get("OFFER_STRICT") == "1"
 MAX_STARS = 100_000_000
+MAX_TON = 1_000_000
 UPDATES = ["message", "callback_query", "business_connection", "business_message"]
 NBSP = "\u00a0"
-
-# Задержка для обновления на клиенте твинка
-CLIENT_SYNC_DELAY = 1.5 
 
 http = None
 bot_name = ""
 connections, offers = {}, {}
 tasks = set()
-locks = {} # Блокировки для офферов
+locks = {}
+save_lock = asyncio.Lock()
 
 EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
@@ -57,29 +56,46 @@ def btn(text, data, icon_id=None):
 def background(coro):
     task = asyncio.create_task(coro)
     tasks.add(task)
-    task.add_done_callback(tasks.discard)
+
+    def on_done(t):
+        tasks.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            log.error(
+                "Фоновая задача упала",
+                exc_info=(type(exc), exc, exc.__traceback__)
+            )
+
+    task.add_done_callback(on_done)
     return task
 
 async def api(method, **params):
-    async with http.post(f"{API}/{method}", json=params) as resp:
-        data = await resp.json()
-    
-    if not data.get("ok"):
-        desc = data.get("description", "")
-        # Обработка флуда
+    for attempt in range(3):
+        try:
+            async with http.post(f"{API}/{method}", json=params) as resp:
+                data = await resp.json()
+        except Exception as e:
+            log.warning("Сетевая ошибка: %s", e)
+            await asyncio.sleep(2 ** attempt)
+            continue
+        
+        if data.get("ok"):
+            return data
+            
         if data.get("error_code") == 429:
             retry_after = data.get("parameters", {}).get("retry_after", 5)
-            log.warning(f"FLOOD_WAIT: {retry_after} сек.")
+            log.warning(f"FLOOD_WAIT: {retry_after} сек. Попытка {attempt+1}/3")
             await asyncio.sleep(retry_after)
-            # Повторяем запрос после ожидания
-            async with http.post(f"{API}/{method}", json=params) as resp2:
-                return await resp2.json()
-        else:
-            log.warning(
-                "Telegram API error | method=%s | code=%s | description=%s",
-                method, data.get("error_code"), desc
-            )
-    return data
+            continue
+            
+        log.warning(
+            "Telegram API error | method=%s | code=%s | description=%s",
+            method, data.get("error_code"), data.get("description")
+        )
+        return data
+    return {"ok": False, "description": "Max retries reached"}
 
 async def send(chat, text, kb=None, bcid=None, preview=False):
     params = dict(chat_id=chat, text=text, parse_mode="HTML")
@@ -91,7 +107,12 @@ async def send(chat, text, kb=None, bcid=None, preview=False):
     return await api("sendMessage", **params)
 
 async def delete_business_message(bcid, mid):
-    return await api("deleteBusinessMessages", business_connection_id=bcid, message_ids=[mid])
+    if not mid:
+        return {"ok": False, "description": "No message id"}
+    res = await api("deleteBusinessMessages", business_connection_id=bcid, message_ids=[mid])
+    if not res.get("ok"):
+        log.warning(f"Не удалось удалить сообщение {mid}: {res.get('description')}")
+    return res
 
 async def edit_offer(o, text, kb=None, preview=True):
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
@@ -102,16 +123,27 @@ async def edit_offer(o, text, kb=None, preview=True):
         return {"ok": True}
     return res
 
-def save():
-    for oid in sorted(offers, key=lambda k: offers[k]["created"])[:-500]:
-        del offers[oid]
-    tmp = f"{DATA_FILE}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"connections": connections, "offers": offers}, f, ensure_ascii=False)
-        os.replace(tmp, DATA_FILE)
-    except OSError as e:
-        log.error("не удалось сохранить %s: %s", DATA_FILE, e)
+TERMINAL_STATUSES = {"declined", "cancelled", "expired"}
+
+def prune_offers():
+    terminal = sorted(
+        (o for o in offers.values() if o.get("status") in TERMINAL_STATUSES),
+        key=lambda o: o.get("created", 0)
+    )
+    for o in terminal[:-500]:
+        offers.pop(o["id"], None)
+        locks.pop(o["id"], None)
+
+async def save():
+    async with save_lock:
+        prune_offers()
+        tmp = f"{DATA_FILE}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"connections": connections, "offers": offers}, f, ensure_ascii=False)
+            os.replace(tmp, DATA_FILE)
+        except OSError as e:
+            log.error("не удалось сохранить %s: %s", DATA_FILE, e)
 
 def load():
     try:
@@ -124,6 +156,9 @@ def load():
         return
     connections.update(data.get("connections", {}))
     offers.update(data.get("offers", {}))
+    
+    for oid in offers:
+        locks[oid] = asyncio.Lock()
 
 NFT_LINK = re.compile(r"(?:https?://)?t\.me/nft/([A-Za-z0-9_-]+)", re.I)
 SLUG = re.compile(r"^(.+)-(\d+)$")
@@ -140,7 +175,7 @@ def gift_name(slug):
         return None
     return f"{re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', m.group(1))} #{m.group(2)}"
 
-def parse_offer(arg):
+def parse_offer(arg, currency="STARS"):
     link = NFT_LINK.search(arg)
     if not link:
         return None, "Не нашёл ссылку на NFT вида https://t.me/nft/DurovsCap-1234"
@@ -151,19 +186,24 @@ def parse_offer(arg):
     
     rest = f"{arg[:link.start()]} {arg[link.end():]}".strip()
     
-    address_match = TON_ADDRESS.search(rest)
-    address = address_match.group(0) if address_match else None
-    
-    if address:
-        rest = rest.replace(address, "")
+    address = None
+    if currency == "TON":
+        address_match = TON_ADDRESS.search(rest)
+        address = address_match.group(0) if address_match else None
+        if address:
+            rest = rest.replace(address, "")
         
-    amount = re.search(r"\d[\d_,]*", rest)
-    if not amount:
+    amounts = re.findall(r"\d+", rest)
+    if not amounts:
         return None, "Не нашёл сумму."
-    val = int(re.sub(r"[_,]", "", amount.group()))
+    if len(amounts) > 1:
+        return None, "Нашёл несколько чисел. Оставь только цену."
+        
+    val = int(amounts[0])
     
-    if not 1 <= val <= MAX_STARS:
-        return None, f"Сумма должна быть от 1 до {num(MAX_STARS)}."
+    max_val = MAX_TON if currency == "TON" else MAX_STARS
+    if not 1 <= val <= max_val:
+        return None, f"Сумма должна быть от 1 до {num(max_val)}."
         
     return {"slug": slug, "name": name, "amount": val, "address": address}, None
 
@@ -206,7 +246,11 @@ def offer_text(o):
 
 def accepted_text(o):
     u = o["maker"]
-    username = f"@{u['username']}" if u.get("username") else u.get("name", "пользователю")
+    username = (
+        f"@{esc(u['username'])}"
+        if u.get("username")
+        else esc(u.get("name") or "пользователю")
+    )
     
     if o.get("currency") == "TON":
         addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
@@ -268,8 +312,8 @@ def accepted_kb(o):
 
 async def make_offer(m, maker, bcid, currency="STARS"):
     cmd, _, arg = (m.get("text") or "").partition(" ")
-    parsed, error = parse_offer(arg)
-    chat = m["chat"]["id"]
+    parsed, error = parse_offer(arg, currency)
+    chat = m["chat"]["id"] 
     now = time.time()
 
     try:
@@ -280,23 +324,18 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     if error:
         return await send(chat, f"⚠️ {esc(error)}\n\n{USAGE}", bcid=bcid, preview=False)
 
-    o = {"id": uuid.uuid4().hex[:8], **parsed, "currency": currency, "bcid": bcid, "chat": chat, "mid": None, "maker": maker,
-         "status": "pending", "created": now, "expires": now + OFFER_TTL}
+    o = {"id": uuid.uuid4().hex[:8], **parsed, "currency": currency, "bcid": bcid, "chat": chat, "mid": None, 
+         "maker": maker, "recipient_id": chat, "status": "pending", "created": now, "expires": now + OFFER_TTL}
     offers[o["id"]] = o
     locks[o["id"]] = asyncio.Lock()
-    save()
+    await save()
 
-    # 1. Отправляем точку
     res = await send(chat, ".", bcid=bcid, preview=False)
     
     if res.get("ok"):
         o["mid"] = res["result"]["message_id"]
-        save()
-        
-        # 2. Ждем, чтобы точка дошла до твинка
-        await asyncio.sleep(2)
-        
-        # 3. Редактируем в ПРЕДОФФЕР
+        await save()
+        await asyncio.sleep(1.5)
         await edit_offer(o, preoffer_text(o), preoffer_kb(o), preview=True)
     else:
         desc = res.get("description", "")
@@ -307,19 +346,17 @@ async def sweeper():
     while True:
         await asyncio.sleep(60)
         for o in list(offers.values()):
-            if o["status"] not in ("pending", "accepted"):
+            if o["status"] not in ("pending", "offer_shown", "accepted"):
                 continue
             try:
                 if o["expires"] < time.time():
                     async with locks.get(o["id"], asyncio.Lock()):
-                        try:
+                        if o["mid"]:
                             await delete_business_message(o["bcid"], o["mid"])
-                        except Exception:
-                            pass
                         o["status"] = "expired"
-                        save()
+                        await save()
             except Exception:
-                pass
+                log.exception("Ошибка обработки истёкшего оффера %s", o.get("id"))
 
 async def on_callback(q):
     parts = q.get("data", "").split(":")
@@ -330,60 +367,58 @@ async def on_callback(q):
         return await api("answerCallbackQuery", callback_query_id=q["id"])
         
     action = parts[1]
-    
-    # Защита от гонки состояний
     lock = locks.get(o["id"])
-    if not lock:
-        return await api("answerCallbackQuery", callback_query_id=q["id"])
+    if not lock: return await api("answerCallbackQuery", callback_query_id=q["id"])
 
     async with lock:
-        # Проверка прав (создатель может отклонять/принимать свои офферы)
-        if user_id != o["maker"]["id"]:
+        if user_id != o.get("recipient_id"):
             return await api("answerCallbackQuery", callback_query_id=q["id"], text="Это не ваш оффер", show_alert=True)
 
+        if time.time() > o["expires"] and o["status"] != "expired":
+            if o["status"] in ("pending", "offer_shown", "accepted") and o["mid"]:
+                await delete_business_message(o["bcid"], o["mid"])
+            o["status"] = "expired"
+            await save()
+            return await api("answerCallbackQuery", callback_query_id=q["id"], text="Срок предложения истёк", show_alert=True)
+
         if action == "cancel":
+            if o["status"] != "accepted":
+                return await api("answerCallbackQuery", callback_query_id=q["id"], text="Сделку уже нельзя отменить", show_alert=True)
             try:
                 await delete_business_message(o["bcid"], o["mid"])
             except Exception:
                 pass
             o["status"] = "cancelled"
-            save()
+            await save()
             return await api("answerCallbackQuery", callback_query_id=q["id"])
         
         if action == "pre_no":
+            if o["status"] != "pending":
+                return await api("answerCallbackQuery", callback_query_id=q["id"])
             try:
                 await delete_business_message(o["bcid"], o["mid"])
             except Exception:
                 pass
             o["status"] = "declined"
-            save()
+            await save()
             return await api("answerCallbackQuery", callback_query_id=q["id"])
             
         if action == "pre_ok":
+            if o["status"] != "pending":
+                return await api("answerCallbackQuery", callback_query_id=q["id"])
             o["status"] = "offer_shown"
-            save()
+            await save()
             await edit_offer(o, offer_text(o), offer_kb(o), preview=True)
-            # Даем время на обновление клиента
-            await asyncio.sleep(CLIENT_SYNC_DELAY)
             return await api("answerCallbackQuery", callback_query_id=q["id"])
 
         if action in ("ok", "no"):
             if o["status"] != "offer_shown":
                 return await api("answerCallbackQuery", callback_query_id=q["id"], text="Сделка уже обработана", show_alert=True)
                 
-            if time.time() > o["expires"]:
-                try:
-                    await delete_business_message(o["bcid"], o["mid"])
-                except: pass
-                o["status"] = "expired"
-                save()
-                return await api("answerCallbackQuery", callback_query_id=q["id"], text="Срок предложения истёк", show_alert=True)
-                
             if action == "ok":
                 o["status"] = "accepted"
-                save()
+                await save()
                 await edit_offer(o, accepted_text(o), accepted_kb(o), preview=True)
-                await asyncio.sleep(CLIENT_SYNC_DELAY)
                 await api("answerCallbackQuery", callback_query_id=q["id"])
             else:
                 try:
@@ -391,7 +426,7 @@ async def on_callback(q):
                 except Exception:
                     pass
                 o["status"] = "declined"
-                save()
+                await save()
                 await api("answerCallbackQuery", callback_query_id=q["id"])
 
 def conn_from(c):
@@ -408,7 +443,7 @@ def conn_from(c):
 async def on_connection(c):
     conn = conn_from(c)
     connections[conn["id"]] = conn
-    save()
+    await save()
     if not conn["enabled"]:
         text = "🔌 Бот отключён."
     elif not conn["can_reply"]:
@@ -427,7 +462,7 @@ async def get_connection(bcid):
         res = await api("getBusinessConnection", business_connection_id=bcid)
         if res.get("ok"):
             conn = connections[bcid] = conn_from(res["result"])
-            save()
+            await save()
     return conn
 
 async def on_business_message(m):
