@@ -226,22 +226,22 @@ def preoffer_text(o):
         addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
         return (f"Вы точно хотите отправить сделку на {gift_link(o)} за <b>{amount}</b>{addr_text}?\n\n"
-                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}<a href=\"https://t.me/{bot_name}\">.</a>")
     else:
         amount = f'{num(o["amount"])} звёзд'
         return (f"Вы точно хотите отправить сделку на {gift_link(o)} за <b>{amount}</b>?\n\n"
-                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}<a href=\"https://t.me/{bot_name}\">.</a>")
 
 def offer_text(o):
     if o.get("currency") == "TON":
         addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b>{addr_text} за подарок {gift_link(o)}.\n\n"
-                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}<a href=\"https://t.me/{bot_name}/?start=offer\">.</a>")
     else:
         amount = f'{num(o["amount"])} звёзд'
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
-                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}<a href=\"https://t.me/{bot_name}/?start=offer\">.</a>")
     return text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else "")
 
 def accepted_text(o):
