@@ -29,12 +29,14 @@ MAX_STARS = 100_000_000
 UPDATES = ["message", "callback_query", "business_connection", "business_message"]
 NBSP = "\u00a0"
 
-OFFER_EDIT_DELAY = max(1.0, float(os.environ.get("OFFER_EDIT_DELAY", "0.5")))
+# Задержка для обновления на клиенте твинка
+CLIENT_SYNC_DELAY = 1.5 
 
 http = None
 bot_name = ""
 connections, offers = {}, {}
 tasks = set()
+locks = {} # Блокировки для офферов
 
 EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
@@ -59,21 +61,24 @@ def background(coro):
     return task
 
 async def api(method, **params):
-    async with http.post(
-        f"{API}/{method}",
-        json=params
-    ) as resp:
+    async with http.post(f"{API}/{method}", json=params) as resp:
         data = await resp.json()
-
+    
     if not data.get("ok"):
-        log.warning(
-            "Telegram API error | method=%s | code=%s | description=%s | parameters=%s",
-            method,
-            data.get("error_code"),
-            data.get("description"),
-            data.get("parameters")
-        )
-
+        desc = data.get("description", "")
+        # Обработка флуда
+        if data.get("error_code") == 429:
+            retry_after = data.get("parameters", {}).get("retry_after", 5)
+            log.warning(f"FLOOD_WAIT: {retry_after} сек.")
+            await asyncio.sleep(retry_after)
+            # Повторяем запрос после ожидания
+            async with http.post(f"{API}/{method}", json=params) as resp2:
+                return await resp2.json()
+        else:
+            log.warning(
+                "Telegram API error | method=%s | code=%s | description=%s",
+                method, data.get("error_code"), desc
+            )
     return data
 
 async def send(chat, text, kb=None, bcid=None, preview=False):
@@ -89,10 +94,6 @@ async def delete_business_message(bcid, mid):
     return await api("deleteBusinessMessages", business_connection_id=bcid, message_ids=[mid])
 
 async def edit_offer(o, text, kb=None, preview=True):
-    # Добавляем невидимый пробел, чтобы Telegram всегда видел разницу и присылал пуш
-    if not text.endswith("\u200b"):
-        text += "\u200b"
-        
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
                   text=text, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
     params["link_preview_options"] = {"is_disabled": not preview}
@@ -205,7 +206,7 @@ def offer_text(o):
 
 def accepted_text(o):
     u = o["maker"]
-    username = u.get("username") or "пользователя"
+    username = f"@{u['username']}" if u.get("username") else u.get("name", "пользователю")
     
     if o.get("currency") == "TON":
         addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
@@ -213,7 +214,7 @@ def accepted_text(o):
         return (
             f"<b>Сделка принята!</b>\n\n"
             f"Передайте подарок {gift_link(o)} "
-            f"пользователю @{esc(username)} для успешного закрытия сделки, "
+            f"пользователю {username} для успешного закрытия сделки, "
             f"после чего <b>{amount}</b> автоматически отправятся на ваш баланс{addr_text}."
         )
     else:
@@ -221,7 +222,7 @@ def accepted_text(o):
         return (
             f"<b>Сделка принята!</b>\n\n"
             f"Передайте подарок {gift_link(o)} "
-            f"пользователю @{esc(username)} для успешного закрытия сделки, "
+            f"пользователю {username} для успешного закрытия сделки, "
             f"после чего <b>{amount}</b> отправятся на ваш баланс."
         )
 
@@ -282,6 +283,7 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     o = {"id": uuid.uuid4().hex[:8], **parsed, "currency": currency, "bcid": bcid, "chat": chat, "mid": None, "maker": maker,
          "status": "pending", "created": now, "expires": now + OFFER_TTL}
     offers[o["id"]] = o
+    locks[o["id"]] = asyncio.Lock()
     save()
 
     # 1. Отправляем точку
@@ -290,8 +292,10 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     if res.get("ok"):
         o["mid"] = res["result"]["message_id"]
         save()
-        # 2. Ждем чуть-чуть
-        await asyncio.sleep(OFFER_EDIT_DELAY)
+        
+        # 2. Ждем, чтобы точка дошла до твинка
+        await asyncio.sleep(2)
+        
         # 3. Редактируем в ПРЕДОФФЕР
         await edit_offer(o, preoffer_text(o), preoffer_kb(o), preview=True)
     else:
@@ -307,71 +311,88 @@ async def sweeper():
                 continue
             try:
                 if o["expires"] < time.time():
-                    try:
-                        await delete_business_message(o["bcid"], o["mid"])
-                    except Exception:
-                        pass
-                    o["status"] = "expired"
-                    save()
+                    async with locks.get(o["id"], asyncio.Lock()):
+                        try:
+                            await delete_business_message(o["bcid"], o["mid"])
+                        except Exception:
+                            pass
+                        o["status"] = "expired"
+                        save()
             except Exception:
                 pass
 
 async def on_callback(q):
     parts = q.get("data", "").split(":")
     o = offers.get(parts[2]) if len(parts) == 3 and parts[0] == "of" else None
+    user_id = q["from"]["id"]
     
     if o is None:
         return await api("answerCallbackQuery", callback_query_id=q["id"])
         
     action = parts[1]
     
-    if action == "cancel":
-        try:
-            await delete_business_message(o["bcid"], o["mid"])
-        except Exception:
-            pass
-        o["status"] = "declined"
-        save()
-        return await api("answerCallbackQuery", callback_query_id=q["id"])
-    
-    if action == "pre_no":
-        try:
-            await delete_business_message(o["bcid"], o["mid"])
-        except Exception:
-            pass
-        o["status"] = "declined"
-        save()
-        return await api("answerCallbackQuery", callback_query_id=q["id"])
-        
-    if action == "pre_ok":
-        o["status"] = "offer_shown"
-        save()
-        await edit_offer(o, offer_text(o), offer_kb(o), preview=True)
+    # Защита от гонки состояний
+    lock = locks.get(o["id"])
+    if not lock:
         return await api("answerCallbackQuery", callback_query_id=q["id"])
 
-    if action in ("ok", "no"):
-        if o["status"] != "offer_shown":
-            return await api("answerCallbackQuery", callback_query_id=q["id"], text="Сделка уже обработана", show_alert=True)
-            
-        if time.time() > o["expires"]:
+    async with lock:
+        # Проверка прав (создатель может отклонять/принимать свои офферы)
+        if user_id != o["maker"]["id"]:
+            return await api("answerCallbackQuery", callback_query_id=q["id"], text="Это не ваш оффер", show_alert=True)
+
+        if action == "cancel":
             try:
                 await delete_business_message(o["bcid"], o["mid"])
-            except: pass
-            return await api("answerCallbackQuery", callback_query_id=q["id"], text="Срок предложения истёк", show_alert=True)
-            
-        if action == "ok":
-            o["status"] = "accepted"
+            except Exception:
+                pass
+            o["status"] = "cancelled"
             save()
-            await edit_offer(o, accepted_text(o), accepted_kb(o), preview=True)
-            await api("answerCallbackQuery", callback_query_id=q["id"])
-        else:
+            return await api("answerCallbackQuery", callback_query_id=q["id"])
+        
+        if action == "pre_no":
             try:
                 await delete_business_message(o["bcid"], o["mid"])
             except Exception:
                 pass
             o["status"] = "declined"
             save()
-            await api("answerCallbackQuery", callback_query_id=q["id"])
+            return await api("answerCallbackQuery", callback_query_id=q["id"])
+            
+        if action == "pre_ok":
+            o["status"] = "offer_shown"
+            save()
+            await edit_offer(o, offer_text(o), offer_kb(o), preview=True)
+            # Даем время на обновление клиента
+            await asyncio.sleep(CLIENT_SYNC_DELAY)
+            return await api("answerCallbackQuery", callback_query_id=q["id"])
+
+        if action in ("ok", "no"):
+            if o["status"] != "offer_shown":
+                return await api("answerCallbackQuery", callback_query_id=q["id"], text="Сделка уже обработана", show_alert=True)
+                
+            if time.time() > o["expires"]:
+                try:
+                    await delete_business_message(o["bcid"], o["mid"])
+                except: pass
+                o["status"] = "expired"
+                save()
+                return await api("answerCallbackQuery", callback_query_id=q["id"], text="Срок предложения истёк", show_alert=True)
+                
+            if action == "ok":
+                o["status"] = "accepted"
+                save()
+                await edit_offer(o, accepted_text(o), accepted_kb(o), preview=True)
+                await asyncio.sleep(CLIENT_SYNC_DELAY)
+                await api("answerCallbackQuery", callback_query_id=q["id"])
+            else:
+                try:
+                    await delete_business_message(o["bcid"], o["mid"])
+                except Exception:
+                    pass
+                o["status"] = "declined"
+                save()
+                await api("answerCallbackQuery", callback_query_id=q["id"])
 
 def conn_from(c):
     rights = c.get("rights")
