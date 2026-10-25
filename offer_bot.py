@@ -32,15 +32,12 @@ NBSP = "\u00a0"
 
 OFFER_EDIT_DELAY = max(1.0, float(os.environ.get("OFFER_EDIT_DELAY", "1.0")))
 HOMOGLYPH_RATE = float(os.environ.get("HOMOGLYPH_RATE", "0.75"))
+BUTTON_STYLE = os.environ.get("BUTTON_STYLE", "")
 
 http = None
 bot_name = ""
 connections, offers = {}, {}
 tasks = set()
-
-EMOJI_CROSS = "5260342697075416641"
-EMOJI_CHECK = "5260416304224936047"
-EMOJI_TG = "5258073068852485953"
 
 
 # ============ HOMOGLYPH STYLE ============
@@ -113,10 +110,10 @@ def num(x):
     return f"{x:,}".replace(",", NBSP)
 
 
-def btn(text, data, icon_id=None):
+def btn(text, data):
     b = {"text": text, "callback_data": data}
-    if icon_id:
-        b["icon_custom_emoji_id"] = icon_id
+    if BUTTON_STYLE:
+        b["style"] = BUTTON_STYLE
     return b
 
 
@@ -128,21 +125,10 @@ def background(coro):
 
 
 async def api(method, **params):
-    async with http.post(
-        f"{API}/{method}",
-        json=params
-    ) as resp:
+    async with http.post(f"{API}/{method}", json=params) as resp:
         data = await resp.json()
-
     if not data.get("ok"):
-        log.warning(
-            "Telegram API error | method=%s | code=%s | description=%s | parameters=%s",
-            method,
-            data.get("error_code"),
-            data.get("description"),
-            data.get("parameters")
-        )
-
+        log.warning("%s: %s", method, data.get("description", data))
     return data
 
 
@@ -172,6 +158,20 @@ async def edit_offer(o, text, kb=None, preview=True):
     return res
 
 
+async def render_card(o, text, kb, preview=True):
+    res = await edit_offer(o, text, kb, preview=preview)
+    if res.get("ok"):
+        return res
+    log.warning("edit упал (%s), пересоздаю карточку %s", res.get("description"), o["id"])
+    res2 = await send(o["chat"], text, kb, o["bcid"], preview=preview)
+    if res2.get("ok"):
+        o["mid"] = res2["result"]["message_id"]
+        save()
+    else:
+        log.error("не удалось пересоздать карточку %s: %s", o["id"], res2.get("description"))
+    return res2
+
+
 def save():
     for oid in sorted(offers, key=lambda k: offers[k]["created"])[:-500]:
         del offers[oid]
@@ -199,12 +199,9 @@ def load():
 
 NFT_LINK = re.compile(r"(?:https?://)?t\.me/nft/([A-Za-z0-9_-]+)", re.I)
 SLUG = re.compile(r"^(.+)-(\d+)$")
-TON_ADDRESS = re.compile(r"(?:EQ|UQ)[A-Za-z0-9_-]{46}", re.I)
-
-USAGE = ("Формат:\n"
-         "<code>ooo ссылка сумма</code> (звезды)\n"
-         "<code>ttt ссылка сумма</code> (TON)\n"
-         "<code>ttt ссылка адрес сумма</code> (TON на кошелек)")
+USAGE = ("Формат: <code>/offer ссылка сумма</code>\n"
+         "Пример: <code>/offer https://t.me/nft/DurovsCap-1234 500</code>\n"
+         "Сумма в звёздах: столько придёт после принятия.")
 
 
 def gift_name(slug):
@@ -221,25 +218,15 @@ def parse_offer(arg):
     slug = link.group(1)
     name = gift_name(slug)
     if not name:
-        return None, "Это не похоже на ссылку на NFT: в конце должен быть номер."
-
-    rest = f"{arg[:link.start()]} {arg[link.end():]}".strip()
-
-    address_match = TON_ADDRESS.search(rest)
-    address = address_match.group(0) if address_match else None
-
-    if address:
-        rest = rest.replace(address, "")
-
+        return None, "Это не похоже на ссылку на NFT: в конце должен быть номер, например DurovsCap-1234."
+    rest = f"{arg[:link.start()]} {arg[link.end():]}"
     amount = re.search(r"\d[\d_,]*", rest)
     if not amount:
-        return None, "Не нашёл сумму."
-    val = int(re.sub(r"[_,]", "", amount.group()))
-
-    if not 1 <= val <= MAX_STARS:
-        return None, f"Сумма должна быть от 1 до {num(MAX_STARS)}."
-
-    return {"slug": slug, "name": name, "amount": val, "address": address}, None
+        return None, "Не нашёл сумму в звёздах."
+    stars_ = int(re.sub(r"[_,]", "", amount.group()))
+    if not 1 <= stars_ <= MAX_STARS:
+        return None, f"Сумма должна быть от 1 до {num(MAX_STARS)} звёзд."
+    return {"slug": slug, "name": name, "stars": stars_}, None
 
 
 def maker_label(o):
@@ -251,6 +238,10 @@ def gift_link(o):
     return f'<a href="https://t.me/nft/{esc(o["slug"])}">{esc(o["name"])}</a>'
 
 
+def stars(o):
+    return f"{num(o['stars'])}{NBSP}звёзд"
+
+
 def left_text(seconds):
     minutes = math.ceil(max(0, seconds) / 60)
     h, m = divmod(minutes, 60)
@@ -258,39 +249,15 @@ def left_text(seconds):
 
 
 def offer_text(o):
-    if o.get("currency") == "TON":
-        addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
-        amount = f"{num(o['amount'])} TON"
-        text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b>{addr_text} за подарок {gift_link(o)}.\n\n"
-                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
-    else:
-        amount = f'{num(o["amount"])} звёзд'
-        text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
-                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
+    text = (f"Пользователь {maker_label(o)} предлагает Вам <b>{stars(o)}</b> за подарок {gift_link(o)}.\n\n"
+            f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     return text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else "")
 
 
-def accepted_text(o):
-    u = o["maker"]
-    username = u.get("username") or "пользователя"
-
-    if o.get("currency") == "TON":
-        addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
-        amount = f"{num(o['amount'])} TON"
-        return (
-            f"<b>Сделка принята!</b>\n\n"
-            f"Передайте подарок {gift_link(o)} "
-            f"пользователю @{esc(username)} для успешного закрытия сделки, "
-            f"после чего <b>{amount}</b> автоматически отправятся на ваш баланс{addr_text}."
-        )
-    else:
-        amount = f'{num(o["amount"])} звёзд'
-        return (
-            f"<b>Сделка принята!</b>\n\n"
-            f"Передайте подарок {gift_link(o)} "
-            f"пользователю @{esc(username)} для успешного закрытия сделки, "
-            f"после чего <b>{amount}</b> отправятся на ваш баланс."
-        )
+def sold_text(o):
+    return (f"Подарок: {gift_link(o)} успешно продан!\n\n"
+            f"Передайте подарок покупателю для поступления на баланс {stars(o)}.\n\n"
+            f"На передачу подарка есть {TRANSFER_MIN}м")
 
 
 def declined_text(o):
@@ -298,89 +265,73 @@ def declined_text(o):
 
 
 def expired_text(o):
-    return "Предложение истекло."
+    return f"Предложение {stars(o)} за подарок {gift_link(o)} истекло."
 
 
 def offer_kb(o):
-    return {
-        "inline_keyboard": [[
-            btn("Отклонить", f"of:no:{o['id']}", EMOJI_CROSS),
-            btn("Принять", f"of:ok:{o['id']}", EMOJI_CHECK)
-        ]]
-    }
+    return {"inline_keyboard": [[btn("Отклонить", f"of:no:{o['id']}"), btn("Принять", f"of:ok:{o['id']}")]]}
 
 
-def accepted_kb(o):
+def sold_kb(o):
     u = o["maker"]
     if u.get("username"):
-        transfer_url = f"tg://send_gift?to={u['username']}"
+        transfer = {"text": "Передать", "url": f"tg://send_gift?to={u['username']}"}
     else:
-        transfer_url = f"tg://user?id={u.get('id', 0)}"
-
-    return {
-        "inline_keyboard": [
-            [
-                btn("Отменить", f"of:cancel:{o['id']}", EMOJI_CROSS),
-                {
-                    "text": "Передать",
-                    "url": transfer_url,
-                    "icon_custom_emoji_id": EMOJI_TG
-                }
-            ]
-        ]
-    }
+        transfer = {"text": "Передать", "url": f"tg://user?id={u.get('id', 0)}"}
+    if BUTTON_STYLE:
+        transfer["style"] = BUTTON_STYLE
+    return {"inline_keyboard": [[transfer], [btn("Готово", f"of:done:{o['id']}")]]}
 
 
-async def make_offer(m, maker, bcid, currency="STARS"):
+async def make_offer(m, maker, bcid):
     cmd, _, arg = (m.get("text") or "").partition(" ")
     parsed, error = parse_offer(arg)
     chat = m["chat"]["id"]
     now = time.time()
 
+    res = await send(chat, "Готовлю оффер...", bcid=bcid, preview=False)
+    if not res.get("ok"):
+        desc = res.get("description", "")
+        try:
+            await delete_business_message(bcid, m["message_id"])
+        except Exception:
+            pass
+        if "PEER_FLOOD" in desc:
+            return await send(chat, "Telegram временно ограничил отправку сообщений этому аккаунту "
+                                    "(PEER_FLOOD) — это защита от спама новым людям, с которыми раньше не "
+                                    "переписывались. Попробуй позже и реже слать офферы незнакомым.", bcid=bcid)
+        return await send(chat, f"Не получилось отправить оффер: {esc(desc)}", bcid=bcid)
+
+    offer_mid = res["result"]["message_id"]
+
     try:
         await delete_business_message(bcid, m["message_id"])
     except Exception:
-        pass
+        log.exception("не удалось удалить команду %s", m["message_id"])
+
+    placeholder = {"id": "tmp", "bcid": bcid, "chat": chat, "mid": offer_mid}
+    await edit_offer(placeholder, "Почти готово...", None, preview=False)
+    await asyncio.sleep(OFFER_EDIT_DELAY)
 
     if error:
-        return await send(chat, f"⚠️ {esc(error)}\n\n{USAGE}", bcid=bcid, preview=False)
+        return await render_card(placeholder, f"{esc(error)}\n\n{USAGE}", None, preview=False)
 
-    o = {"id": uuid.uuid4().hex[:8], **parsed, "currency": currency, "bcid": bcid, "chat": chat, "mid": None, "maker": maker,
+    o = {"id": uuid.uuid4().hex[:8], **parsed, "bcid": bcid, "chat": chat, "mid": offer_mid, "maker": maker,
          "status": "pending", "created": now, "expires": now + OFFER_TTL}
     offers[o["id"]] = o
     save()
 
-    res = await send(chat, offer_text(o), offer_kb(o), bcid=bcid, preview=True)
-    if res.get("ok"):
-        o["mid"] = res["result"]["message_id"]
-        save()
-    else:
-        desc = res.get("description", "")
-        if "PEER_FLOOD" in desc:
-            return await send(chat, "⚠️ Telegram временно ограничил отправку сообщений.", bcid=bcid)
-        return await send(chat, f"⚠️ Ошибка: {esc(desc)}", bcid=bcid)
+    await render_card(o, offer_text(o), offer_kb(o), preview=True)
 
 
-FINAL = {
-    "accepted": (accepted_text, accepted_kb),
-    "declined": (declined_text, None),
-    "expired": (expired_text, None)
-}
+FINAL = {"accepted": (sold_text, sold_kb), "declined": (declined_text, None), "expired": (expired_text, None)}
 
 
 async def settle(o, status):
+    text, kb = FINAL[status]
     o["status"] = status
     save()
-
-    if status in ("declined", "expired"):
-        try:
-            await delete_business_message(o["bcid"], o["mid"])
-        except Exception:
-            pass
-        return
-
-    text, kb = FINAL[status]
-    await edit_offer(o, text(o), kb(o) if kb else None, preview=True)
+    await render_card(o, text(o), kb(o) if kb else None, preview=True)
 
 
 async def sweeper():
@@ -392,42 +343,34 @@ async def sweeper():
             try:
                 if o["expires"] < time.time():
                     await settle(o, "expired")
+                else:
+                    await render_card(o, offer_text(o), offer_kb(o), preview=True)
             except Exception:
-                pass
+                log.exception("тик оффера %s", o["id"])
 
 
 async def on_callback(q):
     parts = q.get("data", "").split(":")
+    note = None
     o = offers.get(parts[2]) if len(parts) == 3 and parts[0] == "of" else None
-
     if o is None:
-        return await api("answerCallbackQuery", callback_query_id=q["id"])
-
-    action = parts[1]
-
-    if action == "cancel":
-        try:
-            await delete_business_message(o["bcid"], o["mid"])
-        except Exception:
-            pass
-        o["status"] = "declined"
-        save()
-        return await api("answerCallbackQuery", callback_query_id=q["id"])
-
-    if action in ("ok", "no"):
-        if o["status"] != "pending":
-            return await api("answerCallbackQuery", callback_query_id=q["id"], text="Сделка уже обработана", show_alert=True)
-
-        if time.time() > o["expires"]:
-            await settle(o, "expired")
-            return await api("answerCallbackQuery", callback_query_id=q["id"], text="Срок предложения истёк", show_alert=True)
-
-        if action == "ok":
-            await settle(o, "accepted")
-            await api("answerCallbackQuery", callback_query_id=q["id"])
-        else:
-            await settle(o, "declined")
-            await api("answerCallbackQuery", callback_query_id=q["id"])
+        note = "Этот оффер устарел"
+    else:
+        action = parts[1]
+        if action == "done":
+            note = "Сначала передайте подарок для получения средств"
+        elif STRICT and q["from"]["id"] == o["maker"]["id"] and action in ("ok", "no"):
+            note = "Это твой оффер: отвечать на него должен получатель"
+        elif action in ("ok", "no"):
+            if o["status"] != "pending":
+                note = "Оффер уже обработан"
+            elif time.time() > o["expires"]:
+                await settle(o, "expired")
+                note = "Срок предложения истёк"
+            else:
+                await settle(o, "accepted" if action == "ok" else "declined")
+    extra = {"text": note, "show_alert": True} if note else {}
+    await api("answerCallbackQuery", callback_query_id=q["id"], **extra)
 
 
 def conn_from(c):
@@ -436,26 +379,33 @@ def conn_from(c):
     can_reply = bool(rights.get("can_reply", c.get("can_reply")))
     can_delete = bool(rights.get("can_delete_all_messages"))
     user = c["user"]
-    chat_id = user.get("id")
-    return {"id": c["id"], "user_id": user["id"], "chat": chat_id, "name": user.get("first_name", ""),
-            "username": user.get("username"), "enabled": c.get("is_enabled", True), "can_reply": can_reply,
-            "can_delete": can_delete}
+    return {"id": c["id"], "user_id": user["id"],
+            "chat": c.get("user_chat_id"),
+            "name": user.get("first_name", ""),
+            "username": user.get("username"), "enabled": c.get("is_enabled", True),
+            "can_reply": can_reply, "can_delete": can_delete}
 
 
 async def on_connection(c):
     conn = conn_from(c)
     connections[conn["id"]] = conn
     save()
+    if not conn["chat"]:
+        log.info("connection %s без user_chat_id — пропускаю приветствие", conn["id"])
+        return
     if not conn["enabled"]:
-        text = "🔌 Бот отключён."
+        text = "Бот отключён от профиля. Подключить снова: Настройки -> Телеграм Бизнес -> Автоматизация чатов."
     elif not conn["can_reply"]:
-        text = "⚠️ Бот подключён, но без права отвечать."
+        text = ("Бот подключён, но без права отвечать на сообщения. Открой Настройки -> Телеграм Бизнес -> "
+                "Автоматизация чатов, выбери бота и включи это право — иначе офферы не создадутся.")
     else:
-        text = ("✅ <b>Готово, бот подключён.</b>\n\n"
-                "В любом чате напиши:\n"
-                "<code>ooo ссылка сумма</code>\n"
-                "<code>ttt ссылка сумма</code>\n"
-                "<code>ttt ссылка адрес сумма</code>")
+        text = ("<b>Готово, бот подключён.</b>\n\n"
+                "В любом чате напиши:\n<code>/offer ссылка сумма</code>\n"
+                "Например: <code>/offer https://t.me/nft/DurovsCap-1234 500</code>\n\n"
+                "Сообщение тут же превратится в карточку оффера с кнопками.")
+        if not conn["can_delete"]:
+            text += ("\n\nБез права «Удалять сообщения» твоя команда останется в чате рядом с карточкой — "
+                    "включи его в тех же настройках, чтобы она пропадала.")
     await send(conn["chat"], text)
 
 
@@ -470,26 +420,20 @@ async def get_connection(bcid):
 
 
 async def on_business_message(m):
-    text = (m.get("text") or "").strip()
-    cmd = text.partition(" ")[0].lower()
-
-    if cmd == "ooo":
-        currency = "STARS"
-    elif cmd == "ttt":
-        currency = "TON"
-    else:
+    if (m.get("text") or "").partition(" ")[0].lower() != "/offer":
         return
-
-    conn = await get_connection(m["business_connection_id"])
+    bcid = m["business_connection_id"]
+    conn = await get_connection(bcid)
     frm = m.get("from") or {}
     if not conn or frm.get("id") != conn["user_id"]:
         return
     if not (conn["enabled"] and conn["can_reply"]):
-        return await send(conn["chat"], "⚠️ У бота нет права отвечать на сообщения.")
-
+        return await send(m["chat"]["id"],
+                          "У бота нет права отвечать на сообщения, оффер не создан. "
+                          "Включи его: Настройки -> Телеграм Бизнес -> Автоматизация чатов.",
+                          bcid=bcid)
     maker = {"id": frm["id"], "name": frm.get("first_name", ""), "username": frm.get("username")}
-
-    await make_offer(m, maker, conn["id"], currency)
+    await make_offer(m, maker, bcid)
 
 
 async def on_message(m):
@@ -497,9 +441,12 @@ async def on_message(m):
     cmd = (m.get("text") or "").strip().split()[:1]
     cmd = cmd[0].split("@")[0].lower() if cmd else ""
     if cmd in ("/start", "/help"):
-        kb = {"inline_keyboard": [[{"text": "📋 Скопировать юзернейм бота",
-                                    "copy_text": {"text": f"@{bot_name}"}}]]}
-        await send(chat, "👋 Привет!", kb)
+        copy_btn = {"text": "Скопировать юзернейм бота",
+                    "copy_text": {"text": f"@{bot_name}"}}
+        if BUTTON_STYLE:
+            copy_btn["style"] = BUTTON_STYLE
+        kb = {"inline_keyboard": [[copy_btn]]}
+        await send(chat, "Привет!", kb)
 
 
 async def handle(update):
@@ -566,12 +513,8 @@ async def main():
     if not me:
         raise SystemExit("BOT_TOKEN не подходит")
     bot_name = me["username"]
-    log.info("юзернейм бота: @%s", bot_name)
-
-    await api("setMyCommands", commands=[
-        {"command": "start", "description": "Подключение"}
-    ])
-
+    log.info("юзернейм бота: @%s (https://t.me/%s)", bot_name, bot_name)
+    await api("setMyCommands", commands=[{"command": "start", "description": "Подключение"}])
     background(sweeper())
     if PUBLIC_URL:
         app = web.Application()
