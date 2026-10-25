@@ -113,7 +113,7 @@ async def api(method, **params):
     return data
 
 async def send(chat, text, kb=None, bcid=None, preview=False):
-    text = style(text)  # Маскировка перед отправкой
+    # style() больше НЕ ВЫЗЫВАЕТСЯ здесь, как и в коде друга
     params = dict(chat_id=chat, text=text, parse_mode="HTML")
     params["link_preview_options"] = {"is_disabled": not preview}
     if kb:
@@ -126,7 +126,7 @@ async def delete_business_message(bcid, mid):
     return await api("deleteBusinessMessages", business_connection_id=bcid, message_ids=[mid])
 
 async def edit_offer(o, text, kb=None, preview=True):
-    text = style(text)  # Маскировка перед редактированием
+    # style() больше НЕ ВЫЗЫВАЕТСЯ здесь
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
                   text=text, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
     params["link_preview_options"] = {"is_disabled": not preview}
@@ -217,7 +217,7 @@ def left_text(seconds):
     h, m = divmod(minutes, 60)
     return f"{h} ч. {m} мин." if h else f"{m} мин."
 
-# ============ ТЕКСТЫ ============
+# ============ ТЕКСТЫ (style() ТОЛЬКО ЗДЕСЬ) ============
 
 def offer_text(o):
     if o.get("currency") == "TON":
@@ -229,7 +229,7 @@ def offer_text(o):
         amount = f'{num(o["amount"])} звёзд'
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
                 f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
-    return text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else "")
+    return style(text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else ""))
 
 def accepted_text(o):
     u = o["maker"]
@@ -238,7 +238,7 @@ def accepted_text(o):
     if o.get("currency") == "TON":
         addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
-        return (
+        return style(
             f"<b>Сделка принята!</b>\n\n"
             f"Передайте подарок {gift_link(o)} "
             f"пользователю @{esc(username)} для успешного закрытия сделки, "
@@ -246,7 +246,7 @@ def accepted_text(o):
         )
     else:
         amount = f'{num(o["amount"])} звёзд'
-        return (
+        return style(
             f"<b>Сделка принята!</b>\n\n"
             f"Передайте подарок {gift_link(o)} "
             f"пользователю @{esc(username)} для успешного закрытия сделки, "
