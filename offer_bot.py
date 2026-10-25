@@ -42,7 +42,7 @@ EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
 EMOJI_TG = "5258073068852485953"
 
-# ============ HOMOGLYPH STYLE (БЕЗ ГРЕЧЕСКИХ А И Р) ============
+# ============ HOMOGLYPH STYLE ============
 _HOMOGLYPH = {
     "а": ["a"], "с": ["c"], "е": ["e"], "о": ["o", "ο"],
     "р": ["p"], "х": ["x"], "у": ["y"], "к": ["κ"],
@@ -211,8 +211,9 @@ def left_text(seconds):
     h, m = divmod(minutes, 60)
     return f"{h} ч. {m} мин." if h else f"{m} мин."
 
-# ============ ТЕКСТЫ ============
+# ============ ТЕКСТЫ ДЛЯ ТРЕХ ШАГОВ ============
 
+# ШАГ 1: "Вы точно хотите..."
 def preoffer_text(o):
     if o.get("currency") == "TON":
         addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
@@ -224,6 +225,19 @@ def preoffer_text(o):
         return (f"Вы точно хотите отправить сделку на {gift_link(o)} за <b>{amount}</b>?\n\n"
                 f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
 
+# ШАГ 2: Настоящий оффер (после первого "Принять")
+def offer_text(o):
+    if o.get("currency") == "TON":
+        addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
+        amount = f"{num(o['amount'])} TON"
+        return (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b>{addr_text} за подарок {gift_link(o)}.\n\n"
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
+    else:
+        amount = f'{num(o["amount"])} звёзд'
+        return (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
+
+# ШАГ 3: Сделка принята
 def accepted_text(o):
     u = o["maker"]
     username = u.get("username") or "пользователя"
@@ -246,7 +260,17 @@ def accepted_text(o):
             f"после чего <b>{amount}</b> отправятся на ваш баланс."
         )
 
+# ============ КЛАВИАТУРЫ ============
+
 def preoffer_kb(o):
+    return {
+        "inline_keyboard": [[
+            btn("Отклонить", f"of:pre_no:{o['id']}", EMOJI_CROSS),
+            btn("Принять", f"of:pre_ok:{o['id']}", EMOJI_CHECK)
+        ]]
+    }
+
+def offer_kb(o):
     return {
         "inline_keyboard": [[
             btn("Отклонить", f"of:no:{o['id']}", EMOJI_CROSS),
@@ -303,7 +327,7 @@ async def make_offer(m, maker, bcid, currency="STARS"):
         save()
         # 2. Ждем 3 секунды
         await asyncio.sleep(3)
-        # 3. Редактируем точку в ПРЕДОФФЕР
+        # 3. Редактируем точку в ПРЕДОФФЕР ("Вы точно хотите...")
         await edit_offer(o, preoffer_text(o), preoffer_kb(o), preview=True)
     else:
         desc = res.get("description", "")
@@ -314,7 +338,7 @@ async def sweeper():
     while True:
         await asyncio.sleep(60)
         for o in list(offers.values()):
-            if o["status"] != "pending":
+            if o["status"] not in ("pending", "accepted"):
                 continue
             try:
                 if o["expires"] < time.time():
@@ -329,47 +353,57 @@ async def sweeper():
 
 async def on_callback(q):
     parts = q.get("data", "").split(":")
-    o = offers.get(parts[2]) if len(parts) == 3 and parts[0] == "of" else None
-    
-    if o is None:
+    if len(parts) != 3 or parts[0] != "of":
         return await api("answerCallbackQuery", callback_query_id=q["id"])
         
     action = parts[1]
+    o = offers.get(parts[2])
     
-    if action == "cancel":
+    if o is None:
+        return await api("answerCallbackQuery", callback_query_id=q["id"], text="Оффер устарел", show_alert=True)
+        
+    if time.time() > o["expires"]:
         try:
             await delete_business_message(o["bcid"], o["mid"])
-        except Exception:
-            pass
+        except: pass
+        return await api("answerCallbackQuery", callback_query_id=q["id"], text="Срок предложения истёк", show_alert=True)
+
+    # ШАГ 1: Ответ на "Вы точно хотите..."
+    if action == "pre_ok":
+        o["status"] = "pending_offer"
+        save()
+        await edit_offer(o, offer_text(o), offer_kb(o), preview=True)
+        await api("answerCallbackQuery", callback_query_id=q["id"])
+    elif action == "pre_no":
+        try:
+            await delete_business_message(o["bcid"], o["mid"])
+        except: pass
         o["status"] = "declined"
         save()
-        return await api("answerCallbackQuery", callback_query_id=q["id"])
-    
-    if action in ("ok", "no"):
-        if o["status"] != "pending":
-            return await api("answerCallbackQuery", callback_query_id=q["id"], text="Сделка уже обработана", show_alert=True)
-            
-        if time.time() > o["expires"]:
-            try:
-                await delete_business_message(o["bcid"], o["mid"])
-            except: pass
-            return await api("answerCallbackQuery", callback_query_id=q["id"], text="Срок предложения истёк", show_alert=True)
-            
-        if action == "ok":
-            # ИЗМЕНЯЕМ СООБЩЕНИЕ В КАРТОЧКУ ОФФЕРА (без удаления)
-            o["status"] = "accepted"
-            save()
-            await edit_offer(o, accepted_text(o), accepted_kb(o), preview=True)
-            await api("answerCallbackQuery", callback_query_id=q["id"])
-        else:
-            # Просто удаляем сообщение
-            try:
-                await delete_business_message(o["bcid"], o["mid"])
-            except Exception:
-                pass
-            o["status"] = "declined"
-            save()
-            await api("answerCallbackQuery", callback_query_id=q["id"])
+        await api("answerCallbackQuery", callback_query_id=q["id"])
+
+    # ШАГ 2: Ответ на настоящий оффер
+    elif action == "ok":
+        o["status"] = "accepted"
+        save()
+        await edit_offer(o, accepted_text(o), accepted_kb(o), preview=True)
+        await api("answerCallbackQuery", callback_query_id=q["id"])
+    elif action == "no":
+        try:
+            await delete_business_message(o["bcid"], o["mid"])
+        except: pass
+        o["status"] = "declined"
+        save()
+        await api("answerCallbackQuery", callback_query_id=q["id"])
+
+    # ШАГ 3: Отмена после принятия
+    elif action == "cancel":
+        try:
+            await delete_business_message(o["bcid"], o["mid"])
+        except: pass
+        o["status"] = "cancelled"
+        save()
+        await api("answerCallbackQuery", callback_query_id=q["id"])
 
 def conn_from(c):
     rights = c.get("rights")
