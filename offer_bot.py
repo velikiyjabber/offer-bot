@@ -89,6 +89,10 @@ async def delete_business_message(bcid, mid):
     return await api("deleteBusinessMessages", business_connection_id=bcid, message_ids=[mid])
 
 async def edit_offer(o, text, kb=None, preview=True):
+    # Добавляем невидимый пробел, чтобы Telegram всегда видел разницу и присылал пуш
+    if not text.endswith("\u200b"):
+        text += "\u200b"
+        
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
                   text=text, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
     params["link_preview_options"] = {"is_disabled": not preview}
