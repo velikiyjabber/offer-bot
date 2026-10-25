@@ -43,7 +43,7 @@ EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
 EMOJI_TG = "5258073068852485953"
 
-# ============ HOMOGLYPH STYLE ============
+# ============ HOMOGLYPH STYLE (От друга) ============
 _HOMOGLYPH = {
     "а": ["a", "α"], "с": ["c"], "е": ["e"], "о": ["o", "ο"],
     "р": ["p", "ρ"], "х": ["x"], "у": ["y"], "к": ["κ"],
@@ -82,7 +82,7 @@ def style(text: str) -> str:
     out.append(_style_plain(tail) if depth == 0 else tail)
     return "".join(out)
 
-# ============ HELPERS ============
+# ============ БАЗОВЫЕ ФУНКЦИИ ============
 
 def esc(s):
     return html.escape(str(s))
@@ -310,6 +310,7 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     offers[o["id"]] = o
     save()
 
+    # Отправляем сразу карточку, как в рабочем коде друга
     res = await send(chat, offer_text(o), offer_kb(o), bcid=bcid, preview=True)
     if res.get("ok"):
         o["mid"] = res["result"]["message_id"]
