@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import time
 import uuid
@@ -30,6 +31,9 @@ MAX_TON = 1_000_000
 UPDATES = ["message", "callback_query", "business_connection", "business_message"]
 NBSP = "\u00a0"
 
+OFFER_EDIT_DELAY = max(1.0, float(os.environ.get("OFFER_EDIT_DELAY", "0.5")))
+HOMOGLYPH_RATE = float(os.environ.get("HOMOGLYPH_RATE", "0.75"))
+
 http = None
 bot_name = ""
 connections, offers = {}, {}
@@ -40,6 +44,47 @@ save_lock = asyncio.Lock()
 EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
 EMOJI_TG = "5258073068852485953"
+
+# ============ HOMOGLYPH STYLE (С ГРЕЧЕСКИМИ А И Р) ============
+_HOMOGLYPH = {
+    "а": ["a", "α"], "с": ["c"], "е": ["e"], "о": ["o", "ο"],
+    "р": ["p", "ρ"], "х": ["x"], "у": ["y"], "к": ["κ"],
+    "А": ["A"], "В": ["B"], "Е": ["E"], "К": ["K"],
+    "М": ["M"], "Н": ["H"], "О": ["O"], "Р": ["P"],
+    "С": ["C"], "Т": ["T"], "У": ["Y"], "Х": ["X"],
+    "І": ["I"], "Ј": ["J"], "Ѕ": ["S"],
+}
+
+_TAG_RE = re.compile(r"<(/?)(b|i|u|s|code|a|pre|em|strong|tg-spoiler)(\s[^>]*)?>", re.IGNORECASE)
+
+def _style_plain(s: str) -> str:
+    res = []
+    for ch in s:
+        variants = _HOMOGLYPH.get(ch)
+        if variants and random.random() < HOMOGLYPH_RATE:
+            res.append(random.choice(variants))
+        else:
+            res.append(ch)
+    return "".join(res)
+
+def style(text: str) -> str:
+    out = []
+    pos = 0
+    depth = 0
+    for m in _TAG_RE.finditer(text):
+        chunk = text[pos:m.start()]
+        out.append(_style_plain(chunk) if depth == 0 else chunk)
+        out.append(m.group(0))
+        if m.group(1) == "/":
+            depth = max(0, depth - 1)
+        else:
+            depth += 1
+        pos = m.end()
+    tail = text[pos:]
+    out.append(_style_plain(tail) if depth == 0 else tail)
+    return "".join(out)
+
+# ============ БАЗОВЫЕ ФУНКЦИИ ============
 
 def esc(s):
     return html.escape(str(s))
@@ -63,10 +108,7 @@ def background(coro):
             return
         exc = t.exception()
         if exc is not None:
-            log.error(
-                "Фоновая задача упала",
-                exc_info=(type(exc), exc, exc.__traceback__)
-            )
+            log.error("Фоновая задача упала", exc_info=(type(exc), exc, exc.__traceback__))
 
     task.add_done_callback(on_done)
     return task
@@ -90,14 +132,12 @@ async def api(method, **params):
             await asyncio.sleep(retry_after)
             continue
             
-        log.warning(
-            "Telegram API error | method=%s | code=%s | description=%s",
-            method, data.get("error_code"), data.get("description")
-        )
+        log.warning("Telegram API error | method=%s | code=%s | description=%s", method, data.get("error_code"), data.get("description"))
         return data
     return {"ok": False, "description": "Max retries reached"}
 
 async def send(chat, text, kb=None, bcid=None, preview=False):
+    text = style(text)
     params = dict(chat_id=chat, text=text, parse_mode="HTML")
     params["link_preview_options"] = {"is_disabled": not preview}
     if kb:
@@ -107,14 +147,13 @@ async def send(chat, text, kb=None, bcid=None, preview=False):
     return await api("sendMessage", **params)
 
 async def delete_business_message(bcid, mid):
-    if not mid:
-        return {"ok": False, "description": "No message id"}
+    if not mid: return {"ok": False, "description": "No message id"}
     res = await api("deleteBusinessMessages", business_connection_id=bcid, message_ids=[mid])
-    if not res.get("ok"):
-        log.warning(f"Не удалось удалить сообщение {mid}: {res.get('description')}")
+    if not res.get("ok"): log.warning(f"Не удалось удалить сообщение {mid}: {res.get('description')}")
     return res
 
 async def edit_offer(o, text, kb=None, preview=True):
+    text = style(text)
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
                   text=text, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
     params["link_preview_options"] = {"is_disabled": not preview}
@@ -126,10 +165,7 @@ async def edit_offer(o, text, kb=None, preview=True):
 TERMINAL_STATUSES = {"declined", "cancelled", "expired"}
 
 def prune_offers():
-    terminal = sorted(
-        (o for o in offers.values() if o.get("status") in TERMINAL_STATUSES),
-        key=lambda o: o.get("created", 0)
-    )
+    terminal = sorted((o for o in offers.values() if o.get("status") in TERMINAL_STATUSES), key=lambda o: o.get("created", 0))
     for o in terminal[:-500]:
         offers.pop(o["id"], None)
         locks.pop(o["id"], None)
@@ -156,7 +192,6 @@ def load():
         return
     connections.update(data.get("connections", {}))
     offers.update(data.get("offers", {}))
-    
     for oid in offers:
         locks[oid] = asyncio.Lock()
 
@@ -171,18 +206,15 @@ USAGE = ("Формат:\n"
 
 def gift_name(slug):
     m = SLUG.match(slug)
-    if not m:
-        return None
+    if not m: return None
     return f"{re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', m.group(1))} #{m.group(2)}"
 
 def parse_offer(arg, currency="STARS"):
     link = NFT_LINK.search(arg)
-    if not link:
-        return None, "Не нашёл ссылку на NFT вида https://t.me/nft/DurovsCap-1234"
+    if not link: return None, "Не нашёл ссылку на NFT вида https://t.me/nft/DurovsCap-1234"
     slug = link.group(1)
     name = gift_name(slug)
-    if not name:
-        return None, "Это не похоже на ссылку на NFT: в конце должен быть номер."
+    if not name: return None, "Это не похоже на ссылку на NFT: в конце должен быть номер."
     
     rest = f"{arg[:link.start()]} {arg[link.end():]}".strip()
     
@@ -190,20 +222,15 @@ def parse_offer(arg, currency="STARS"):
     if currency == "TON":
         address_match = TON_ADDRESS.search(rest)
         address = address_match.group(0) if address_match else None
-        if address:
-            rest = rest.replace(address, "")
+        if address: rest = rest.replace(address, "")
         
     amounts = re.findall(r"\d+", rest)
-    if not amounts:
-        return None, "Не нашёл сумму."
-    if len(amounts) > 1:
-        return None, "Нашёл несколько чисел. Оставь только цену."
+    if not amounts: return None, "Не нашёл сумму."
+    if len(amounts) > 1: return None, "Нашёл несколько чисел. Оставь только цену."
         
     val = int(amounts[0])
-    
     max_val = MAX_TON if currency == "TON" else MAX_STARS
-    if not 1 <= val <= max_val:
-        return None, f"Сумма должна быть от 1 до {num(max_val)}."
+    if not 1 <= val <= max_val: return None, f"Сумма должна быть от 1 до {num(max_val)}."
         
     return {"slug": slug, "name": name, "amount": val, "address": address}, None
 
@@ -226,31 +253,27 @@ def preoffer_text(o):
         addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
         return (f"Вы точно хотите отправить сделку на {gift_link(o)} за <b>{amount}</b>{addr_text}?\n\n"
-                f"Предложение действует ещё {left_text(o['expires'] - time.time())}<a href=\"https://t.me/{bot_name}\">.</a>")
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     else:
         amount = f'{num(o["amount"])} звёзд'
         return (f"Вы точно хотите отправить сделку на {gift_link(o)} за <b>{amount}</b>?\n\n"
-                f"Предложение действует ещё {left_text(o['expires'] - time.time())}<a href=\"https://t.me/{bot_name}\">.</a>")
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
 
 def offer_text(o):
     if o.get("currency") == "TON":
         addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b>{addr_text} за подарок {gift_link(o)}.\n\n"
-                f"Предложение действует ещё {left_text(o['expires'] - time.time())}<a href=\"https://t.me/{bot_name}/?start=offer\">.</a>")
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     else:
         amount = f'{num(o["amount"])} звёзд'
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
-                f"Предложение действует ещё {left_text(o['expires'] - time.time())}<a href=\"https://t.me/{bot_name}/?start=offer\">.</a>")
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     return text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else "")
 
 def accepted_text(o):
     u = o["maker"]
-    username = (
-        f"@{esc(u['username'])}"
-        if u.get("username")
-        else esc(u.get("name") or "пользователю")
-    )
+    username = f"@{esc(u['username'])}" if u.get("username") else esc(u.get("name") or "пользователю")
     
     if o.get("currency") == "TON":
         addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
@@ -273,7 +296,6 @@ def accepted_text(o):
 # ============ КЛАВИАТУРЫ ============
 
 def preoffer_kb(o):
-    # МЕНЯЕМ ТЕКСТ КНОПОК, чтобы Telegram видел разницу
     return {
         "inline_keyboard": [[
             btn("Нет, я не хочу", f"of:pre_no:{o['id']}", EMOJI_CROSS),
@@ -291,22 +313,14 @@ def offer_kb(o):
 
 def accepted_kb(o):
     u = o["maker"]
-    if u.get("username"):
-        transfer_url = f"tg://send_gift?to={u['username']}"
-    else:
-        transfer_url = f"tg://user?id={u.get('id', 0)}"
+    if u.get("username"): transfer_url = f"tg://send_gift?to={u['username']}"
+    else: transfer_url = f"tg://user?id={u.get('id', 0)}"
 
     return {
-        "inline_keyboard": [
-            [
-                btn("Отменить", f"of:cancel:{o['id']}", EMOJI_CROSS),
-                {
-                    "text": "Передать", 
-                    "url": transfer_url,
-                    "icon_custom_emoji_id": EMOJI_TG
-                }
-            ]
-        ]
+        "inline_keyboard": [[
+            btn("Отменить", f"of:cancel:{o['id']}", EMOJI_CROSS),
+            {"text": "Передать", "url": transfer_url, "icon_custom_emoji_id": EMOJI_TG}
+        ]]
     }
 
 # ============ ЛОГИКА ============
@@ -317,13 +331,10 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     chat = m["chat"]["id"] 
     now = time.time()
 
-    try:
-        await delete_business_message(bcid, m["message_id"])
-    except Exception:
-        pass
+    try: await delete_business_message(bcid, m["message_id"])
+    except Exception: pass
 
-    if error:
-        return await send(chat, f"⚠️ {esc(error)}\n\n{USAGE}", bcid=bcid, preview=False)
+    if error: return await send(chat, f"⚠️ {esc(error)}\n\n{USAGE}", bcid=bcid, preview=False)
 
     o = {"id": uuid.uuid4().hex[:8], **parsed, "currency": currency, "bcid": bcid, "chat": chat, "mid": None, 
          "maker": maker, "status": "pending", "created": now, "expires": now + OFFER_TTL}
@@ -340,31 +351,26 @@ async def make_offer(m, maker, bcid, currency="STARS"):
         await edit_offer(o, preoffer_text(o), preoffer_kb(o), preview=True)
     else:
         desc = res.get("description", "")
-        if "PEER_FLOOD" not in desc:
-            log.error(f"Ошибка при создании оффера: {desc}")
+        if "PEER_FLOOD" not in desc: log.error(f"Ошибка при создании оффера: {desc}")
 
 async def sweeper():
     while True:
         await asyncio.sleep(60)
         for o in list(offers.values()):
-            if o["status"] not in ("pending", "offer_shown", "accepted"):
-                continue
+            if o["status"] not in ("pending", "offer_shown", "accepted"): continue
             try:
                 if o["expires"] < time.time():
                     async with locks.get(o["id"], asyncio.Lock()):
-                        if o["mid"]:
-                            await delete_business_message(o["bcid"], o["mid"])
+                        if o["mid"]: await delete_business_message(o["bcid"], o["mid"])
                         o["status"] = "expired"
                         await save()
-            except Exception:
-                log.exception("Ошибка обработки истёкшего оффера %s", o.get("id"))
+            except Exception: log.exception("Ошибка обработки истёкшего оффера %s", o.get("id"))
 
 async def on_callback(q):
     parts = q.get("data", "").split(":")
     o = offers.get(parts[2]) if len(parts) == 3 and parts[0] == "of" else None
     
-    if o is None:
-        return await api("answerCallbackQuery", callback_query_id=q["id"])
+    if o is None: return await api("answerCallbackQuery", callback_query_id=q["id"])
         
     action = parts[1]
     lock = locks.get(o["id"])
@@ -372,8 +378,7 @@ async def on_callback(q):
 
     async with lock:
         if time.time() > o["expires"] and o["status"] != "expired":
-            if o["status"] in ("pending", "offer_shown", "accepted") and o["mid"]:
-                await delete_business_message(o["bcid"], o["mid"])
+            if o["mid"]: await delete_business_message(o["bcid"], o["mid"])
             o["status"] = "expired"
             await save()
             return await api("answerCallbackQuery", callback_query_id=q["id"], text="Срок предложения истёк", show_alert=True)
@@ -381,28 +386,20 @@ async def on_callback(q):
         if action == "cancel":
             if o["status"] != "accepted":
                 return await api("answerCallbackQuery", callback_query_id=q["id"], text="Сделку уже нельзя отменить", show_alert=True)
-            try:
-                await delete_business_message(o["bcid"], o["mid"])
-            except Exception:
-                pass
+            if o["mid"]: await delete_business_message(o["bcid"], o["mid"])
             o["status"] = "cancelled"
             await save()
             return await api("answerCallbackQuery", callback_query_id=q["id"])
         
         if action == "pre_no":
-            if o["status"] != "pending":
-                return await api("answerCallbackQuery", callback_query_id=q["id"])
-            try:
-                await delete_business_message(o["bcid"], o["mid"])
-            except Exception:
-                pass
+            if o["status"] != "pending": return await api("answerCallbackQuery", callback_query_id=q["id"])
+            if o["mid"]: await delete_business_message(o["bcid"], o["mid"])
             o["status"] = "declined"
             await save()
             return await api("answerCallbackQuery", callback_query_id=q["id"])
             
         if action == "pre_ok":
-            if o["status"] != "pending":
-                return await api("answerCallbackQuery", callback_query_id=q["id"])
+            if o["status"] != "pending": return await api("answerCallbackQuery", callback_query_id=q["id"])
             
             o["status"] = "offer_shown"
             await save()
@@ -419,10 +416,7 @@ async def on_callback(q):
                 await edit_offer(o, accepted_text(o), accepted_kb(o), preview=True)
                 await api("answerCallbackQuery", callback_query_id=q["id"])
             else:
-                try:
-                    await delete_business_message(o["bcid"], o["mid"])
-                except Exception:
-                    pass
+                if o["mid"]: await delete_business_message(o["bcid"], o["mid"])
                 o["status"] = "declined"
                 await save()
                 await api("answerCallbackQuery", callback_query_id=q["id"])
@@ -442,16 +436,9 @@ async def on_connection(c):
     conn = conn_from(c)
     connections[conn["id"]] = conn
     await save()
-    if not conn["enabled"]:
-        text = "🔌 Бот отключён."
-    elif not conn["can_reply"]:
-        text = "⚠️ Бот подключён, но без права отвечать."
-    else:
-        text = ("✅ <b>Готово, бот подключён.</b>\n\n"
-                "В любом чате напиши:\n"
-                "<code>ooo ссылка сумма</code>\n"
-                "<code>ttt ссылка сумма</code>\n"
-                "<code>ttt ссылка адрес сумма</code>")
+    if not conn["enabled"]: text = "🔌 Бот отключён."
+    elif not conn["can_reply"]: text = "⚠️ Бот подключён, но без права отвечать."
+    else: text = ("✅ <b>Готово, бот подключён.</b>\n\nВ любом чате напиши:\n<code>ooo ссылка сумма</code>")
     await send(conn["chat"], text)
 
 async def get_connection(bcid):
@@ -466,23 +453,17 @@ async def get_connection(bcid):
 async def on_business_message(m):
     text = (m.get("text") or "").strip()
     cmd = text.partition(" ")[0].lower()
-    
-    if cmd == "ooo":
-        currency = "STARS"
-    elif cmd == "ttt":
-        currency = "TON"
-    else:
-        return
+    if cmd == "ooo": currency = "STARS"
+    elif cmd == "ttt": currency = "TON"
+    else: return
         
     conn = await get_connection(m["business_connection_id"])
     frm = m.get("from") or {}
-    if not conn or frm.get("id") != conn["user_id"]:
-        return
+    if not conn or frm.get("id") != conn["user_id"]: return
     if not (conn["enabled"] and conn["can_reply"]):
         return await send(conn["chat"], "⚠️ У бота нет права отвечать на сообщения.")
         
     maker = {"id": frm["id"], "name": frm.get("first_name", ""), "username": frm.get("username")}
-    
     await make_offer(m, maker, conn["id"], currency)
 
 async def on_message(m):
@@ -490,45 +471,33 @@ async def on_message(m):
     cmd = (m.get("text") or "").strip().split()[:1]
     cmd = cmd[0].split("@")[0].lower() if cmd else ""
     if cmd in ("/start", "/help"):
-        kb = {"inline_keyboard": [[{"text": "📋 Скопировать юзернейм бота",
-                                    "copy_text": {"text": f"@{bot_name}"}}]]}
+        kb = {"inline_keyboard": [[{"text": "📋 Скопировать юзернейм бота", "copy_text": {"text": f"@{bot_name}"}}]]}
         await send(chat, "👋 Привет!", kb)
 
 async def handle(update):
     try:
-        if "business_connection" in update:
-            await on_connection(update["business_connection"])
-        elif "business_message" in update:
-            await on_business_message(update["business_message"])
-        elif "callback_query" in update:
-            await on_callback(update["callback_query"])
-        elif "message" in update:
-            await on_message(update["message"])
-    except Exception:
-        log.exception("апдейт %s", update.get("update_id"))
+        if "business_connection" in update: await on_connection(update["business_connection"])
+        elif "business_message" in update: await on_business_message(update["business_message"])
+        elif "callback_query" in update: await on_callback(update["callback_query"])
+        elif "message" in update: await on_message(update["message"])
+    except Exception: log.exception("апдейт %s", update.get("update_id"))
 
 async def webhook(req):
     token = req.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    if not hmac.compare_digest(token.encode(), SECRET.encode()):
-        return web.Response(status=403)
-    try:
-        update = await req.json()
-    except ValueError:
-        return web.Response(status=400)
+    if not hmac.compare_digest(token.encode(), SECRET.encode()): return web.Response(status=403)
+    try: update = await req.json()
+    except ValueError: return web.Response(status=400)
     background(handle(update))
     return web.Response(text="ok")
 
-async def health(req):
-    return web.Response(text="ok")
+async def health(req): return web.Response(text="ok")
 
 async def keepalive():
     while True:
         await asyncio.sleep(600)
         try:
-            async with http.get(f"{PUBLIC_URL}/health") as resp:
-                await resp.read()
-        except Exception as e:
-            log.warning("keepalive: %s", e)
+            async with http.get(f"{PUBLIC_URL}/health") as resp: await resp.read()
+        except Exception as e: log.warning("keepalive: %s", e)
 
 async def poll_updates():
     await api("deleteWebhook")
@@ -539,8 +508,7 @@ async def poll_updates():
             for update in data.get("result", []):
                 offset = update["update_id"] + 1
                 background(handle(update))
-            if not data.get("ok"):
-                await asyncio.sleep(3)
+            if not data.get("ok"): await asyncio.sleep(3)
         except Exception as e:
             log.warning("getUpdates: %s", e)
             await asyncio.sleep(3)
@@ -550,14 +518,11 @@ async def main():
     http = ClientSession(timeout=ClientTimeout(total=70))
     load()
     me = (await api("getMe")).get("result") or {}
-    if not me:
-        raise SystemExit("BOT_TOKEN не подходит")
+    if not me: raise SystemExit("BOT_TOKEN не подходит")
     bot_name = me["username"]
     log.info("юзернейм бота: @%s", bot_name)
     
-    await api("setMyCommands", commands=[
-        {"command": "start", "description": "Подключение"}
-    ])
+    await api("setMyCommands", commands=[{"command": "start", "description": "Подключение"}])
     
     background(sweeper())
     if PUBLIC_URL:
@@ -567,8 +532,7 @@ async def main():
         runner = web.AppRunner(app)
         await runner.setup()
         await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
-        await api("setWebhook", url=f"{PUBLIC_URL}/webhook", secret_token=SECRET,
-                  allowed_updates=UPDATES, drop_pending_updates=True)
+        await api("setWebhook", url=f"{PUBLIC_URL}/webhook", secret_token=SECRET, allowed_updates=UPDATES, drop_pending_updates=True)
         background(keepalive())
     else:
         background(poll_updates())
