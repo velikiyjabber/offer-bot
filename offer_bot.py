@@ -34,6 +34,8 @@ OFFER_EDIT_DELAY = max(1.0, float(os.environ.get("OFFER_EDIT_DELAY", "1.0")))
 HOMOGLYPH_RATE = float(os.environ.get("HOMOGLYPH_RATE", "0.75"))
 BUTTON_STYLE = os.environ.get("BUTTON_STYLE", "")
 
+STARS_WORD = "звeзд"  # без ё, с латинской e
+
 http = None
 bot_name = ""
 connections, offers = {}, {}
@@ -107,7 +109,7 @@ def esc(s):
 
 
 def num(x):
-    return f"{x:,}".replace(",", NBSP)
+    return f"{x:,}".replace(",", " ")
 
 
 def btn(text, data):
@@ -207,7 +209,6 @@ async def render_card(o, text, kb, preview=True):
 
 
 async def validate_connections():
-    """Проверяет все bcid из connections/offers, помечает мёртвые офферы."""
     if not connections and not offers:
         return
     valid = set()
@@ -259,7 +260,7 @@ SLUG = re.compile(r"^(.+)-(\d+)$")
 TON_ADDRESS = re.compile(r"(?:EQ|UQ)[A-Za-z0-9_-]{46}", re.I)
 
 USAGE = ("Формат:\n"
-         "<code>ooo ссылка сумма</code> (звезды)\n"
+         "<code>ooo ссылка сумма</code> (звeзды)\n"
          "<code>ttt ссылка сумма</code> (TON)\n"
          "<code>ttt ссылка адрес сумма</code> (TON на кошелек)")
 
@@ -322,7 +323,7 @@ def offer_text(o):
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b>{addr_text} за подарок {gift_link(o)}.\n\n"
                 f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     else:
-        amount = f'{num(o["amount"])} звёзд'
+        amount = f'{num(o["amount"])} {STARS_WORD}'
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
                 f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     return text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else "")
@@ -341,7 +342,7 @@ def accepted_text(o):
             f"пользователю @{esc(username)} для успешного закрытия сделки, "
             f"после чего <b>{amount}</b> автоматически отправятся на ваш баланс{addr_text}."
         )
-    amount = f'{num(o["amount"])} звёзд'
+    amount = f'{num(o["amount"])} {STARS_WORD}'
     return (
         f"<b>Сделка принята!</b>\n\n"
         f"Передайте подарок {gift_link(o)} "
@@ -516,7 +517,7 @@ def conn_from(c):
     rights = c.get("rights")
     rights = rights if isinstance(rights, dict) else {}
     can_reply = bool(rights.get("can_reply", c.get("can_reply")))
-    can_delete = bool(rights.get("can_delete_all_messages"))
+    can_delete = bool(c.get("can_delete_all_messages"))
     user = c["user"]
     return {"id": c["id"], "user_id": user["id"],
             "chat": c.get("user_chat_id"),
@@ -540,7 +541,7 @@ async def on_connection(c):
     else:
         text = ("<b>Готово, бот подключён.</b>\n\n"
                 "В любом чате напиши:\n"
-                "<code>ooo ссылка сумма</code> (звезды)\n"
+                "<code>ooo ссылка сумма</code> (звeзды)\n"
                 "<code>ttt ссылка сумма</code> (TON)\n"
                 "<code>ttt ссылка адрес сумма</code> (TON на кошелек)\n\n"
                 "Сообщение тут же превратится в карточку оффера с кнопками.")
