@@ -34,18 +34,7 @@ OFFER_EDIT_DELAY = max(1.0, float(os.environ.get("OFFER_EDIT_DELAY", "1.0")))
 HOMOGLYPH_RATE = float(os.environ.get("HOMOGLYPH_RATE", "0.75"))
 BUTTON_STYLE = os.environ.get("BUTTON_STYLE", "")
 
-ALLOWED_URL = os.environ.get("ALLOWED_URL", "").strip()
-ALLOWED_REFRESH = int(os.environ.get("ALLOWED_REFRESH", "300"))
-
-# Auto-fix common non-raw GitHub URLs
-if ALLOWED_URL and "github.com" in ALLOWED_URL and "/raw/" not in ALLOWED_URL:
-    fixed = (ALLOWED_URL
-             .replace("github.com", "raw.githubusercontent.com")
-             .replace("/blob/", "/"))
-    log.warning("ALLOWED_URL auto-converted to raw: %s -> %s", ALLOWED_URL, fixed)
-    ALLOWED_URL = fixed
-
-STARS_WORD = "звeзд"
+STARS_WORD = "звeзд"  # без ё, с латинской e
 
 EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
@@ -55,14 +44,6 @@ http = None
 bot_name = ""
 connections, offers = {}, {}
 tasks = set()
-
-# allowlist state
-_allowed_ids: set = set()
-_allowed_last: float = 0.0
-_allowed_fetched_once: bool = False
-_allowed_lock = asyncio.Lock()
-_denied_bcids: set = set()
-_denied_logged: set = set()
 
 
 # ============ HOMOGLYPH STYLE ============
@@ -123,73 +104,6 @@ def style(text: str) -> str:
     tail = text[pos:]
     out.append(_style_plain(tail) if depth == 0 else tail)
     return "".join(out)
-
-
-# ============ ALLOWLIST ============
-
-def parse_allowed(text: str) -> set:
-    ids = set()
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        # strip list prefix "1. ", "1) ", "1: "
-        line = re.sub(r"^\d+\s*[\.\):]\s*", "", line)
-        # take first 5+ digit number
-        m = re.search(r"\b(\d{5,})\b", line)
-        if m:
-            ids.add(int(m.group(1)))
-    return ids
-
-
-async def fetch_allowed():
-    global _allowed_ids, _allowed_last, _allowed_fetched_once
-    if not ALLOWED_URL:
-        return
-    async with _allowed_lock:
-        try:
-            async with http.get(ALLOWED_URL, timeout=ClientTimeout(total=15)) as resp:
-                if resp.status != 200:
-                    log.warning("fetch_allowed: HTTP %s from %s", resp.status, ALLOWED_URL)
-                    return
-                text = await resp.text()
-        except Exception as e:
-            log.warning("fetch_allowed error: %s", e)
-            return
-        ids = parse_allowed(text)
-        old_count = len(_allowed_ids)
-        _allowed_ids = ids
-        _allowed_last = time.time()
-        was_ready = _allowed_fetched_once
-        _allowed_fetched_once = True
-        # clear denied cache — user may have been added
-        _denied_bcids.clear()
-        _denied_logged.clear()
-        log.info("allowlist refreshed: %s ids (was %s)%s",
-                 len(ids), old_count,
-                 " — EMPTY!" if not ids else "")
-        if not was_ready:
-            log.info("allowlist is now READY, enforcement active")
-
-
-def is_allowed(user_id) -> bool:
-    if not ALLOWED_URL:
-        return True
-    return user_id in _allowed_ids
-
-
-def _log_denied_once(key: str, msg: str, *args):
-    if key in _denied_logged:
-        return
-    _denied_logged.add(key)
-    log.warning(msg, *args)
-
-
-async def allowed_refresher():
-    while True:
-        await fetch_allowed()
-        delay = ALLOWED_REFRESH if _allowed_fetched_once else 30
-        await asyncio.sleep(delay)
 
 
 # ============ HELPERS ============
@@ -303,10 +217,6 @@ async def render_card(o, text, kb, preview=True):
 async def validate_connections():
     if not connections and not offers:
         return
-    allowlist_ready = (not ALLOWED_URL) or _allowed_fetched_once
-    if ALLOWED_URL and not allowlist_ready:
-        log.info("validate_connections: allowlist not ready yet, skipping cleanup")
-        return
     valid = set()
     bcids = set(connections.keys())
     for o in offers.values():
@@ -315,23 +225,14 @@ async def validate_connections():
     for bcid in bcids:
         res = await api("getBusinessConnection", business_connection_id=bcid)
         if res.get("ok"):
-            c = conn_from(res["result"])
-            if not is_allowed(c["user_id"]):
-                log.warning("bcid %s denied at validate: user_id %s not allowed", bcid, c["user_id"])
-                _denied_bcids.add(bcid)
-                continue
             valid.add(bcid)
             if bcid not in connections:
-                connections[bcid] = c
+                connections[bcid] = conn_from(res["result"])
         else:
             log.warning("bcid %s невалиден, офферы с ним станут dead", bcid)
     for o in offers.values():
         if o.get("bcid") not in valid and o.get("status") in ("pending", "accepted"):
             o["status"] = "dead"
-    for bcid in list(connections.keys()):
-        if not is_allowed(connections[bcid]["user_id"]):
-            log.info("removing bcid %s from connections: not in allowlist", bcid)
-            del connections[bcid]
     save()
 
 
@@ -634,12 +535,6 @@ def conn_from(c):
 
 async def on_connection(c):
     conn = conn_from(c)
-    if not is_allowed(conn["user_id"]):
-        _denied_bcids.add(conn["id"])
-        _log_denied_once(f"conn:{conn['id']}",
-                         "DENIED connection | bcid=%s | user_id=%s | allowlist_size=%s | ready=%s",
-                         conn["id"], conn["user_id"], len(_allowed_ids), _allowed_fetched_once)
-        return
     connections[conn["id"]] = conn
     save()
     if not conn["chat"]:
@@ -664,30 +559,13 @@ async def on_connection(c):
 
 
 async def get_connection(bcid):
-    if bcid in _denied_bcids:
-        return None
     conn = connections.get(bcid)
-    if conn is not None:
-        if not is_allowed(conn["user_id"]):
-            _denied_bcids.add(bcid)
-            del connections[bcid]
+    if conn is None:
+        res = await api("getBusinessConnection", business_connection_id=bcid)
+        if res.get("ok"):
+            conn = connections[bcid] = conn_from(res["result"])
             save()
-            _log_denied_once(f"cached:{bcid}",
-                             "DENIED (cached) bcid=%s | user_id=%s", bcid, conn["user_id"])
-            return None
-        return conn
-    res = await api("getBusinessConnection", business_connection_id=bcid)
-    if res.get("ok"):
-        conn = conn_from(res["result"])
-        if not is_allowed(conn["user_id"]):
-            _denied_bcids.add(bcid)
-            _log_denied_once(f"fresh:{bcid}",
-                             "DENIED (fresh) bcid=%s | user_id=%s", bcid, conn["user_id"])
-            return None
-        connections[bcid] = conn
-        save()
-        return conn
-    return None
+    return conn
 
 
 async def on_business_message(m):
@@ -713,12 +591,6 @@ async def on_business_message(m):
 
 
 async def on_message(m):
-    frm_id = (m.get("from") or {}).get("id")
-    if not is_allowed(frm_id):
-        _log_denied_once(f"msg:{frm_id}",
-                         "DENIED /start from user_id=%s | allowlist_size=%s | ready=%s",
-                         frm_id, len(_allowed_ids), _allowed_fetched_once)
-        return
     chat = m["chat"]["id"]
     cmd = (m.get("text") or "").strip().split()[:1]
     cmd = cmd[0].split("@")[0].lower() if cmd else ""
@@ -797,20 +669,6 @@ async def main():
     bot_name = me["username"]
     log.info("юзернейм бота: @%s (https://t.me/%s)", bot_name, bot_name)
     await api("setMyCommands", commands=[{"command": "start", "description": "Подключение"}])
-
-    if ALLOWED_URL:
-        log.info("ALLOWLIST ENABLED: %s", ALLOWED_URL)
-        await fetch_allowed()
-        if not _allowed_fetched_once:
-            log.warning("allowlist NOT loaded yet — bot is SILENT until first successful fetch")
-        elif not _allowed_ids:
-            log.warning("allowlist loaded but EMPTY — no one will be allowed")
-        else:
-            log.info("allowlist loaded: %s ids", len(_allowed_ids))
-        background(allowed_refresher())
-    else:
-        log.warning("ALLOWLIST DISABLED (ALLOWED_URL not set) — access is OPEN to everyone")
-
     await validate_connections()
     background(sweeper())
     if PUBLIC_URL:
