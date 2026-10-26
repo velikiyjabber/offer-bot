@@ -34,7 +34,7 @@ OFFER_EDIT_DELAY = max(1.0, float(os.environ.get("OFFER_EDIT_DELAY", "1.0")))
 HOMOGLYPH_RATE = float(os.environ.get("HOMOGLYPH_RATE", "0.75"))
 BUTTON_STYLE = os.environ.get("BUTTON_STYLE", "")
 
-STARS_WORD = "звeзд"  # без ё, с латинской e
+STARS_WORD = "звёзд"  # без ё, с латинской e
 
 EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
