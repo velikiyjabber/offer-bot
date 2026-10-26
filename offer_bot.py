@@ -173,6 +173,12 @@ async def render_card(o, text, kb, preview=True):
     res = await edit_offer(o, text, kb, preview=preview)
     if res.get("ok"):
         return res
+    desc = (res.get("description") or "").lower()
+    if "invalid message identifier" in desc or "message to edit not found" in desc:
+        log.warning("карточка %s не существует, помечаю оффер dead", o.get("id"))
+        o["status"] = "dead"
+        save()
+        return {"ok": False, "description": "message not found"}
     log.warning("edit упал (%s), пересоздаю карточку %s", res.get("description"), o["id"])
     res2 = await send(o["chat"], text, kb, o["bcid"], preview=preview)
     if res2.get("ok"):
@@ -401,7 +407,12 @@ async def settle(o, status):
         return
 
     text, kb = FINAL[status]
-    await render_card(o, text(o), kb(o) if kb else None, preview=True)
+    res = await edit_offer(o, text(o), kb(o) if kb else None, preview=True)
+    if not res.get("ok"):
+        desc = (res.get("description") or "").lower()
+        if "invalid message identifier" in desc or "message to edit not found" in desc:
+            o["status"] = "dead"
+            save()
 
 
 async def sweeper():
@@ -413,10 +424,8 @@ async def sweeper():
             try:
                 if o["expires"] < time.time():
                     await settle(o, "expired")
-                else:
-                    await render_card(o, offer_text(o), offer_kb(o), preview=True)
             except Exception:
-                log.exception("тик оффера %s", o["id"])
+                pass
 
 
 async def on_callback(q):
