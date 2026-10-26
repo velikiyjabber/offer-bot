@@ -53,7 +53,7 @@ _HOMOGLYPH = {
     "с": ["c"],
     "е": ["e"],
     "о": ["o", "ο"],
-    "р": ["p"],
+    "р": ["p", "ρ"],
     "х": ["x"],
     "у": ["y"],
     "к": ["κ"],
@@ -154,7 +154,13 @@ async def api(method, **params):
 async def send(chat, text, kb=None, bcid=None, preview=False):
     text = style(text)
     params = dict(chat_id=chat, text=text, parse_mode="HTML")
-    params["link_preview_options"] = {"is_disabled": not preview}
+    
+    # Включаем show_above_text, чтобы превью-карточка была СВЕРХУ
+    params["link_preview_options"] = {
+        "is_disabled": not preview,
+        "show_above_text": bool(preview)
+    }
+    
     if kb:
         params["reply_markup"] = kb
     if bcid:
@@ -170,7 +176,13 @@ async def edit_offer(o, text, kb=None, preview=True):
     text = style(text)
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
                   text=text, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
-    params["link_preview_options"] = {"is_disabled": not preview}
+                  
+    # Включаем show_above_text, чтобы превью-карточка была СВЕРХУ
+    params["link_preview_options"] = {
+        "is_disabled": not preview,
+        "show_above_text": bool(preview)
+    }
+    
     res = await api("editMessageText", **params)
     if not res.get("ok") and "not modified" in (res.get("description") or "").lower():
         return {"ok": True}
