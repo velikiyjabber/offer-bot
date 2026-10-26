@@ -34,7 +34,10 @@ OFFER_EDIT_DELAY = max(1.0, float(os.environ.get("OFFER_EDIT_DELAY", "1.0")))
 HOMOGLYPH_RATE = float(os.environ.get("HOMOGLYPH_RATE", "0.75"))
 BUTTON_STYLE = os.environ.get("BUTTON_STYLE", "")
 
-STARS_WORD = "звeзд"  # без ё, с латинской e
+ALLOWED_URL = os.environ.get("ALLOWED_URL", "").strip()
+ALLOWED_REFRESH = int(os.environ.get("ALLOWED_REFRESH", "300"))
+
+STARS_WORD = "звeзд"
 
 EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
@@ -45,11 +48,18 @@ bot_name = ""
 connections, offers = {}, {}
 tasks = set()
 
+# allowlist state
+_allowed_ids: set = set()
+_allowed_last: float = 0.0
+_allowed_fetched_once: bool = False
+_allowed_lock = asyncio.Lock()
+_denied_bcids: set = set()
+
 
 # ============ HOMOGLYPH STYLE ============
 
 _HOMOGLYPH = {
-    "а": ["a"],
+    "а": ["a", "α"],
     "с": ["c"],
     "е": ["e"],
     "о": ["o", "ο"],
@@ -104,6 +114,61 @@ def style(text: str) -> str:
     tail = text[pos:]
     out.append(_style_plain(tail) if depth == 0 else tail)
     return "".join(out)
+
+
+# ============ ALLOWLIST ============
+
+def parse_allowed(text: str) -> set:
+    ids = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # strip "1. " or "1) " prefix
+        m = re.match(r"^\d+\s*[\.\)]\s*(.+)$", line)
+        if m:
+            line = m.group(1).strip()
+        # find 5+ digit number in the remainder
+        m = re.search(r"\b(\d{5,})\b", line)
+        if m:
+            ids.add(int(m.group(1)))
+    return ids
+
+
+async def fetch_allowed():
+    global _allowed_ids, _allowed_last, _allowed_fetched_once
+    if not ALLOWED_URL:
+        return
+    async with _allowed_lock:
+        try:
+            async with http.get(ALLOWED_URL, timeout=ClientTimeout(total=15)) as resp:
+                if resp.status != 200:
+                    log.warning("fetch_allowed: HTTP %s from %s", resp.status, ALLOWED_URL)
+                    return
+                text = await resp.text()
+        except Exception as e:
+            log.warning("fetch_allowed error: %s", e)
+            return
+        ids = parse_allowed(text)
+        old_count = len(_allowed_ids)
+        _allowed_ids = ids
+        _allowed_last = time.time()
+        _allowed_fetched_once = True
+        _denied_bcids.clear()
+        log.info("allowlist refreshed: %s ids (was %s)", len(ids), old_count)
+
+
+def is_allowed(user_id) -> bool:
+    if not ALLOWED_URL:
+        return True
+    return user_id in _allowed_ids
+
+
+async def allowed_refresher():
+    while True:
+        await fetch_allowed()
+        delay = ALLOWED_REFRESH if _allowed_fetched_once else 30
+        await asyncio.sleep(delay)
 
 
 # ============ HELPERS ============
@@ -225,14 +290,22 @@ async def validate_connections():
     for bcid in bcids:
         res = await api("getBusinessConnection", business_connection_id=bcid)
         if res.get("ok"):
+            c = conn_from(res["result"])
+            if not is_allowed(c["user_id"]):
+                log.warning("bcid %s not allowed, skipping", bcid)
+                continue
             valid.add(bcid)
             if bcid not in connections:
-                connections[bcid] = conn_from(res["result"])
+                connections[bcid] = c
         else:
             log.warning("bcid %s невалиден, офферы с ним станут dead", bcid)
     for o in offers.values():
         if o.get("bcid") not in valid and o.get("status") in ("pending", "accepted"):
             o["status"] = "dead"
+    for bcid in list(connections.keys()):
+        if not is_allowed(connections[bcid]["user_id"]):
+            log.info("removing bcid %s: not in allowlist", bcid)
+            del connections[bcid]
     save()
 
 
@@ -535,6 +608,9 @@ def conn_from(c):
 
 async def on_connection(c):
     conn = conn_from(c)
+    if not is_allowed(conn["user_id"]):
+        log.warning("connection %s denied: user_id %s not in allowlist", conn["id"], conn["user_id"])
+        return
     connections[conn["id"]] = conn
     save()
     if not conn["chat"]:
@@ -559,11 +635,18 @@ async def on_connection(c):
 
 
 async def get_connection(bcid):
+    if bcid in _denied_bcids:
+        return None
     conn = connections.get(bcid)
     if conn is None:
         res = await api("getBusinessConnection", business_connection_id=bcid)
         if res.get("ok"):
-            conn = connections[bcid] = conn_from(res["result"])
+            conn = conn_from(res["result"])
+            if not is_allowed(conn["user_id"]):
+                _denied_bcids.add(bcid)
+                log.warning("bcid %s denied: user_id %s not in allowlist", bcid, conn["user_id"])
+                return None
+            connections[bcid] = conn
             save()
     return conn
 
@@ -591,6 +674,10 @@ async def on_business_message(m):
 
 
 async def on_message(m):
+    frm_id = (m.get("from") or {}).get("id")
+    if not is_allowed(frm_id):
+        log.info("on_message: user %s not allowed", frm_id)
+        return
     chat = m["chat"]["id"]
     cmd = (m.get("text") or "").strip().split()[:1]
     cmd = cmd[0].split("@")[0].lower() if cmd else ""
@@ -669,6 +756,16 @@ async def main():
     bot_name = me["username"]
     log.info("юзернейм бота: @%s (https://t.me/%s)", bot_name, bot_name)
     await api("setMyCommands", commands=[{"command": "start", "description": "Подключение"}])
+
+    if ALLOWED_URL:
+        log.info("allowlist URL: %s", ALLOWED_URL)
+        await fetch_allowed()
+        if not _allowed_fetched_once:
+            log.warning("initial allowlist fetch failed — retrying every 30s in background")
+        background(allowed_refresher())
+    else:
+        log.warning("ALLOWED_URL not set — access is OPEN to everyone")
+
     await validate_connections()
     background(sweeper())
     if PUBLIC_URL:
