@@ -52,7 +52,7 @@ tasks = set()
 # ============ HOMOGLYPH STYLE ============
 
 _HOMOGLYPH = {
-    "а": ["a"],
+    "а": ["a", "α"],
     "с": ["c"],
     "е": ["e"],
     "о": ["o", "ο"],
@@ -284,11 +284,13 @@ def usage(lang: str) -> str:
 
 
 def split_lang(arg: str):
-    parts = arg.rsplit(None, 1)
-    if len(parts) == 2:
-        maybe = parts[1].lower()
-        if maybe in LANG_ALIASES:
-            return parts[0], LANG_ALIASES[maybe]
+    """Находит язык в ЛЮБОЙ позиции, вырезает его, возвращает (очищенный_arg, lang)."""
+    tokens = arg.split()
+    for i, tok in enumerate(tokens):
+        lang = LANG_ALIASES.get(tok.lower())
+        if lang:
+            rest = " ".join(tokens[:i] + tokens[i + 1:])
+            return rest, lang
     return arg, "ru"
 
 
@@ -486,8 +488,7 @@ def sold_kb(o):
     return accepted_kb(o)
 
 
-async def make_offer(m, maker, bcid, currency="STARS", lang="ru"):
-    cmd, _, arg = (m.get("text") or "").partition(" ")
+async def make_offer(m, maker, bcid, arg, currency="STARS", lang="ru"):
     parsed, error = parse_offer(arg, currency)
     chat = m["chat"]["id"]
     now = time.time()
@@ -670,7 +671,7 @@ async def on_business_message(m):
         return await send(conn["chat"], "У бота нет права отвечать на сообщения.", lang="ru")
 
     maker = {"id": frm["id"], "name": frm.get("first_name", ""), "username": frm.get("username")}
-    await make_offer(m, maker, conn["id"], currency, lang)
+    await make_offer(m, maker, conn["id"], arg, currency, lang)
 
 
 async def on_message(m):
