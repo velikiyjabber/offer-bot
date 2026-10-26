@@ -49,7 +49,7 @@ tasks = set()
 # ============ HOMOGLYPH STYLE ============
 
 _HOMOGLYPH = {
-    "а": ["a", "α"],
+    "а": ["a"],
     "с": ["c"],
     "е": ["e"],
     "о": ["o", "ο"],
@@ -390,17 +390,14 @@ def accepted_kb(o):
         transfer_url = f"tg://user?id={u.get('id', 0)}"
 
     return {
-        "inline_keyboard": [
-            [
-                btn("Отменить", f"of:cancel:{o['id']}", EMOJI_CROSS),
-                {
-                    "text": "Передать",
-                    "url": transfer_url,
-                    "icon_custom_emoji_id": EMOJI_TG,
-                },
-            ],
-            [btn("Готово", f"of:done:{o['id']}")],
-        ]
+        "inline_keyboard": [[
+            btn("Отменить", f"of:cancel:{o['id']}", EMOJI_CROSS),
+            {
+                "text": "Передать",
+                "url": transfer_url,
+                "icon_custom_emoji_id": EMOJI_TG,
+            },
+        ]]
     }
 
 
