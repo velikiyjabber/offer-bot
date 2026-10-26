@@ -32,14 +32,9 @@ NBSP = "\u00a0"
 
 OFFER_EDIT_DELAY = max(1.0, float(os.environ.get("OFFER_EDIT_DELAY", "1.0")))
 HOMOGLYPH_RATE = float(os.environ.get("HOMOGLYPH_RATE", "0.75"))
-HOMOGLYPH_RATE_EN = float(os.environ.get("HOMOGLYPH_RATE_EN", "0.12"))
 BUTTON_STYLE = os.environ.get("BUTTON_STYLE", "")
-SEND_COOLDOWN = float(os.environ.get("SEND_COOLDOWN", "2.0"))
 
-STARS_WORD_RU = "звeзд"
-STARS_WORD_EN = "Stars"
-
-LANG_ALIASES = {"en": "en", "ru": "ru", "rus": "ru"}
+STARS_WORD = "звeзд"  # без ё, с латинской e
 
 EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
@@ -49,40 +44,12 @@ http = None
 bot_name = ""
 connections, offers = {}, {}
 tasks = set()
-_last_send_by_bcid = {}
 
 
 # ============ HOMOGLYPH STYLE ============
-# Только ВИЗУАЛЬНО ИДЕНТИЧНЫЕ символы (латиница <-> кириллица/греческий).
-# Rate 0.12 для EN: байты разные (обход PEER_FLOOD), глазами не видно.
 
 _HOMOGLYPH = {
-    # строчная латиница -> кириллица (визуально идентичны)
-    "a": ["а"],
-    "c": ["с"],
-    "e": ["е"],
-    "i": ["і"],
-    "k": ["к"],
-    "o": ["о"],
-    "p": ["р"],
-    "x": ["х"],
-    "y": ["у"],
-    # заглавная латиница -> кириллица (визуально идентичны)
-    "A": ["А"],
-    "B": ["В"],
-    "C": ["С"],
-    "E": ["Е"],
-    "H": ["Н"],
-    "I": ["І"],
-    "K": ["К"],
-    "M": ["М"],
-    "O": ["О"],
-    "P": ["Р"],
-    "T": ["Т"],
-    "X": ["Х"],
-    "Y": ["У"],
-    # кириллица -> латиница/греческий (для RU)
-    "а": ["a", "α"],
+    "а": ["a"],
     "с": ["c"],
     "е": ["e"],
     "о": ["o", "ο"],
@@ -110,27 +77,24 @@ _HOMOGLYPH = {
 _TAG_RE = re.compile(r"<(/?)(b|i|u|s|code|a|pre|em|strong|tg-spoiler)(\s[^>]*)?>", re.IGNORECASE)
 
 
-def _style_plain(s: str, rate: float) -> str:
+def _style_plain(s: str) -> str:
     res = []
     for ch in s:
         variants = _HOMOGLYPH.get(ch)
-        if variants and random.random() < rate:
+        if variants and random.random() < HOMOGLYPH_RATE:
             res.append(random.choice(variants))
         else:
             res.append(ch)
     return "".join(res)
 
 
-def style(text: str, lang: str = "ru") -> str:
-    rate = HOMOGLYPH_RATE_EN if lang == "en" else HOMOGLYPH_RATE
-    if rate <= 0:
-        return text
+def style(text: str) -> str:
     out = []
     pos = 0
     depth = 0
     for m in _TAG_RE.finditer(text):
         chunk = text[pos:m.start()]
-        out.append(_style_plain(chunk, rate) if depth == 0 else chunk)
+        out.append(_style_plain(chunk) if depth == 0 else chunk)
         out.append(m.group(0))
         if m.group(1) == "/":
             depth = max(0, depth - 1)
@@ -138,7 +102,7 @@ def style(text: str, lang: str = "ru") -> str:
             depth += 1
         pos = m.end()
     tail = text[pos:]
-    out.append(_style_plain(tail, rate) if depth == 0 else tail)
+    out.append(_style_plain(tail) if depth == 0 else tail)
     return "".join(out)
 
 
@@ -161,31 +125,11 @@ def btn(text, data, icon_id=None):
     return b
 
 
-def _task_done(task):
-    tasks.discard(task)
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc:
-        log.error("background task failed: %s", exc, exc_info=exc)
-
-
 def background(coro):
     task = asyncio.create_task(coro)
     tasks.add(task)
-    task.add_done_callback(_task_done)
+    task.add_done_callback(tasks.discard)
     return task
-
-
-def _log_preview(text, n=80):
-    if not text:
-        return ""
-    flat = text.replace("\n", " | ")
-    return flat[:n] + ("..." if len(flat) > n else "")
-
-
-def _is_flood(desc: str) -> bool:
-    return "PEER_FLOOD" in (desc or "")
 
 
 async def api(method, **params):
@@ -196,84 +140,40 @@ async def api(method, **params):
         data = await resp.json()
 
     if not data.get("ok"):
-        desc = data.get("description") or ""
-        extra = ""
-        if _is_flood(desc):
-            extra = (f" | FLOOD chat={params.get('chat_id')}"
-                     f" | bcid={params.get('business_connection_id')}"
-                     f" | text={_log_preview(params.get('text'), 60)!r}")
         log.warning(
-            "Telegram API error | method=%s | code=%s | description=%s%s | parameters=%s",
+            "Telegram API error | method=%s | code=%s | description=%s | parameters=%s",
             method,
             data.get("error_code"),
-            desc,
-            extra,
+            data.get("description"),
             data.get("parameters")
         )
 
     return data
 
 
-async def _throttle_send(bcid):
-    if not bcid:
-        return
-    last = _last_send_by_bcid.get(bcid, 0)
-    now = time.time()
-    wait = last + SEND_COOLDOWN - now
-    if wait > 0:
-        log.info("send cooldown | bcid=%s | wait=%.2fs", bcid, wait)
-        await asyncio.sleep(wait)
-    _last_send_by_bcid[bcid] = time.time()
-
-
-async def send(chat, text, kb=None, bcid=None, preview=False, lang="ru"):
-    if not chat:
-        log.warning("send: chat is None, skip | lang=%s | preview=%r", lang, _log_preview(text, 40))
-        return {"ok": False, "description": "no chat"}
-    await _throttle_send(bcid)
-    styled = style(text, lang)
-    log.info(
-        "send | chat=%s | bcid=%s | lang=%s | preview=%r | raw_len=%s | styled_len=%s",
-        chat, bcid, lang, _log_preview(styled, 60), len(text), len(styled)
-    )
-    params = dict(chat_id=chat, text=styled, parse_mode="HTML")
+async def send(chat, text, kb=None, bcid=None, preview=False):
+    text = style(text)
+    params = dict(chat_id=chat, text=text, parse_mode="HTML")
     params["link_preview_options"] = {"is_disabled": not preview}
     if kb:
         params["reply_markup"] = kb
     if bcid:
         params["business_connection_id"] = bcid
-    res = await api("sendMessage", **params)
-    if res.get("ok"):
-        log.info("send OK | chat=%s | mid=%s", chat, res.get("result", {}).get("message_id"))
-    else:
-        log.warning("send FAIL | chat=%s | desc=%s", chat, res.get("description"))
-    return res
+    return await api("sendMessage", **params)
 
 
 async def delete_business_message(bcid, mid):
-    if not bcid or not mid:
-        return {"ok": False}
     return await api("deleteBusinessMessages", business_connection_id=bcid, message_ids=[mid])
 
 
 async def edit_offer(o, text, kb=None, preview=True):
-    if not o.get("mid"):
-        return {"ok": False, "description": "no mid"}
-    lang = o.get("lang", "ru")
-    styled = style(text, lang)
-    log.info(
-        "edit | chat=%s | mid=%s | bcid=%s | lang=%s | preview=%r | raw_len=%s | styled_len=%s",
-        o.get("chat"), o.get("mid"), o.get("bcid"), lang,
-        _log_preview(styled, 60), len(text), len(styled)
-    )
+    text = style(text)
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
-                  text=styled, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
+                  text=text, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
     params["link_preview_options"] = {"is_disabled": not preview}
     res = await api("editMessageText", **params)
     if not res.get("ok") and "not modified" in (res.get("description") or "").lower():
         return {"ok": True}
-    if not res.get("ok"):
-        log.warning("edit FAIL | mid=%s | desc=%s", o.get("mid"), res.get("description"))
     return res
 
 
@@ -300,11 +200,8 @@ async def render_card(o, text, kb, preview=True):
         o["status"] = "dead"
         save()
         return {"ok": False, "description": "dead"}
-    if _is_flood(desc):
-        log.warning("edit FLOOD для %s, пропускаю пересоздание", o.get("id"))
-        return res
     log.warning("edit упал (%s), пересоздаю карточку %s", desc, o["id"])
-    res2 = await send(o["chat"], text, kb, o["bcid"], preview=preview, lang=o.get("lang", "ru"))
+    res2 = await send(o["chat"], text, kb, o["bcid"], preview=preview)
     if res2.get("ok"):
         o["mid"] = res2["result"]["message_id"]
         save()
@@ -368,30 +265,10 @@ NFT_LINK = re.compile(r"(?:https?://)?t\.me/nft/([A-Za-z0-9_-]+)", re.I)
 SLUG = re.compile(r"^(.+)-(\d+)$")
 TON_ADDRESS = re.compile(r"(?:EQ|UQ)[A-Za-z0-9_-]{46}", re.I)
 
-
-def usage(lang: str) -> str:
-    if lang == "en":
-        return ("Format:\n"
-                "<code>ooo link amount [en|ru]</code> (Stars)\n"
-                "<code>ttt link amount [en|ru]</code> (TON)\n"
-                "<code>ttt link address amount [en|ru]</code> (TON to wallet)")
-    return ("Формат:\n"
-            "<code>ooo ссылка сумма [en|ru]</code> (звeзды)\n"
-            "<code>ttt ссылка сумма [en|ru]</code> (TON)\n"
-            "<code>ttt ссылка адрес сумма [en|ru]</code> (TON на кошелек)")
-
-
-def split_lang(arg: str):
-    tokens = arg.split()
-    for i, tok in enumerate(tokens):
-        lang = LANG_ALIASES.get(tok.lower())
-        if lang:
-            rest = " ".join(tokens[:i] + tokens[i + 1:])
-            log.info("split_lang | arg=%r | token=%r at %s | lang=%s | rest=%r",
-                     arg, tok, i, lang, rest)
-            return rest, lang
-    log.info("split_lang | arg=%r | no lang token found -> ru", arg)
-    return arg, "ru"
+USAGE = ("Формат:\n"
+         "<code>ooo ссылка сумма</code> (звeзды)\n"
+         "<code>ttt ссылка сумма</code> (TON)\n"
+         "<code>ttt ссылка адрес сумма</code> (TON на кошелек)")
 
 
 def gift_name(slug):
@@ -404,11 +281,11 @@ def gift_name(slug):
 def parse_offer(arg, currency="STARS"):
     link = NFT_LINK.search(arg)
     if not link:
-        return None, "no_nft_link"
+        return None, "Не нашёл ссылку на NFT вида https://t.me/nft/DurovsCap-1234"
     slug = link.group(1)
     name = gift_name(slug)
     if not name:
-        return None, "bad_slug"
+        return None, "Это не похоже на ссылку на NFT: в конце должен быть номер."
 
     rest = f"{arg[:link.start()]} {arg[link.end():]}".strip()
 
@@ -421,31 +298,13 @@ def parse_offer(arg, currency="STARS"):
 
     amount = re.search(r"\d[\d_,]*", rest)
     if not amount:
-        return None, "no_amount"
+        return None, "Не нашёл сумму."
     val = int(re.sub(r"[_,]", "", amount.group()))
 
     if not 1 <= val <= MAX_STARS:
-        return None, "bad_amount"
+        return None, f"Сумма должна быть от 1 до {num(MAX_STARS)}."
 
     return {"slug": slug, "name": name, "amount": val, "address": address}, None
-
-
-ERROR_TEXT = {
-    "ru": {
-        "no_nft_link": "Не нашёл ссылку на NFT вида https://t.me/nft/DurovsCap-1234",
-        "bad_slug": "Это не похоже на ссылку на NFT: в конце должен быть номер.",
-        "no_amount": "Не нашёл сумму.",
-        "bad_amount": f"Сумма должна быть от 1 до {num(MAX_STARS)}.",
-        "send_failed": "Ошибка: ",
-    },
-    "en": {
-        "no_nft_link": "No NFT link found (https://t.me/nft/DurovsCap-1234)",
-        "bad_slug": "Not an NFT link: must end with a number.",
-        "no_amount": "No amount found.",
-        "bad_amount": f"Amount must be 1 to {num(MAX_STARS)}.",
-        "send_failed": "Error: ",
-    },
-}
 
 
 def maker_label(o):
@@ -457,53 +316,30 @@ def gift_link(o):
     return f'<a href="https://t.me/nft/{esc(o["slug"])}">{esc(o["name"])}</a>'
 
 
-def left_text(seconds, lang="ru"):
+def left_text(seconds):
     minutes = math.ceil(max(0, seconds) / 60)
     h, m = divmod(minutes, 60)
-    if lang == "en":
-        return f"{h}h {m}m" if h else f"{m}m"
     return f"{h} ч. {m} мин." if h else f"{m} мин."
 
 
-def _lang(o):
-    return o.get("lang", "ru")
-
-
 def offer_text(o):
-    lang = _lang(o)
     if o.get("currency") == "TON":
-        if lang == "en":
-            addr_text = f" to <code>{esc(o['address'])}</code>" if o.get("address") else ""
-            amount = f"{num(o['amount'])} TON"
-            return (f"<b>{maker_label(o)}</b> offers you <b>{amount}</b>{addr_text} for the gift {gift_link(o)}.\n\n"
-                    f"This offer is valid for {left_text(o['expires'] - time.time(), lang)}.")
         addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b>{addr_text} за подарок {gift_link(o)}.\n\n"
-                f"Предложение действует ещё {left_text(o['expires'] - time.time(), lang)}")
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     else:
-        if lang == "en":
-            amount = f'{num(o["amount"])} {STARS_WORD_EN}'
-            return (f"<b>{maker_label(o)}</b> offers you <b>{amount}</b> for the gift {gift_link(o)}.\n\n"
-                    f"This offer is valid for {left_text(o['expires'] - time.time(), lang)}.")
-        amount = f'{num(o["amount"])} {STARS_WORD_RU}'
+        amount = f'{num(o["amount"])} {STARS_WORD}'
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
-                f"Предложение действует ещё {left_text(o['expires'] - time.time(), lang)}")
+                f"Предложение действует ещё {left_text(o['expires'] - time.time())}")
     return text + (f"\n\n{esc(TEST_NOTICE)}" if TEST_NOTICE else "")
 
 
 def accepted_text(o):
-    lang = _lang(o)
     u = o["maker"]
-    username = u.get("username") or ("пользователя" if lang == "ru" else "user")
+    username = u.get("username") or "пользователя"
 
     if o.get("currency") == "TON":
-        if lang == "en":
-            addr_text = f" <code>{esc(o['address'])}</code>" if o.get("address") else ""
-            amount = f"{num(o['amount'])} TON"
-            return (f"<b>Offer accepted!</b>\n\n"
-                    f"Send {gift_link(o)} to @{esc(username)} to close the deal.\n"
-                    f"After that, <b>{amount}</b> will be credited to your balance{addr_text}.")
         addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
         return (
@@ -512,12 +348,7 @@ def accepted_text(o):
             f"пользователю @{esc(username)} для успешного закрытия сделки, "
             f"после чего <b>{amount}</b> автоматически отправятся на ваш баланс{addr_text}."
         )
-    if lang == "en":
-        amount = f'{num(o["amount"])} {STARS_WORD_EN}'
-        return (f"<b>Offer accepted!</b>\n\n"
-                f"Send {gift_link(o)} to @{esc(username)} to close the deal.\n"
-                f"After that, <b>{amount}</b> will be credited to your balance.")
-    amount = f'{num(o["amount"])} {STARS_WORD_RU}'
+    amount = f'{num(o["amount"])} {STARS_WORD}'
     return (
         f"<b>Сделка принята!</b>\n\n"
         f"Передайте подарок {gift_link(o)} "
@@ -531,28 +362,18 @@ def sold_text(o):
 
 
 def declined_text(o):
-    return "Offer declined." if _lang(o) == "en" else "Отклонено."
+    return "Отклонено."
 
 
 def expired_text(o):
-    return "This offer has expired." if _lang(o) == "en" else "Предложение истекло."
+    return "Предложение истекло."
 
 
 def done_text(o):
-    if _lang(o) == "en":
-        return f"Confirmed. The deal for {gift_link(o)} is closed."
     return f"Передача подтверждена. Сделка по {gift_link(o)} закрыта."
 
 
 def offer_kb(o):
-    lang = _lang(o)
-    if lang == "en":
-        return {
-            "inline_keyboard": [[
-                btn("Decline", f"of:no:{o['id']}", EMOJI_CROSS),
-                btn("Accept", f"of:ok:{o['id']}", EMOJI_CHECK),
-            ]]
-        }
     return {
         "inline_keyboard": [[
             btn("Отклонить", f"of:no:{o['id']}", EMOJI_CROSS),
@@ -562,21 +383,17 @@ def offer_kb(o):
 
 
 def accepted_kb(o):
-    lang = _lang(o)
     u = o["maker"]
     if u.get("username"):
         transfer_url = f"tg://send_gift?to={u['username']}"
     else:
         transfer_url = f"tg://user?id={u.get('id', 0)}"
 
-    cancel_text = "Cancel" if lang == "en" else "Отменить"
-    transfer_text = "Send" if lang == "en" else "Передать"
-
     return {
         "inline_keyboard": [[
-            btn(cancel_text, f"of:cancel:{o['id']}", EMOJI_CROSS),
+            btn("Отменить", f"of:cancel:{o['id']}", EMOJI_CROSS),
             {
-                "text": transfer_text,
+                "text": "Передать",
                 "url": transfer_url,
                 "icon_custom_emoji_id": EMOJI_TG,
             },
@@ -588,42 +405,26 @@ def sold_kb(o):
     return accepted_kb(o)
 
 
-async def make_offer(m, maker, bcid, arg, currency="STARS", lang="ru"):
+async def make_offer(m, maker, bcid, currency="STARS"):
+    cmd, _, arg = (m.get("text") or "").partition(" ")
     parsed, error = parse_offer(arg, currency)
     chat = m["chat"]["id"]
     now = time.time()
-
-    log.info(
-        "make_offer | chat=%s | bcid=%s | currency=%s | lang=%s | arg=%r | parse_error=%s",
-        chat, bcid, currency, lang, arg, error
-    )
 
     try:
         await delete_business_message(bcid, m["message_id"])
     except Exception:
         pass
 
-    if lang not in ("ru", "en"):
-        log.warning("make_offer: unexpected lang=%r, falling back to ru", lang)
-        lang = "ru"
-
     if error:
-        err_text = ERROR_TEXT.get(lang, ERROR_TEXT["ru"]).get(error, error)
-        return await send(chat, f"{esc(err_text)}\n\n{usage(lang)}", bcid=bcid, preview=False, lang=lang)
+        return await send(chat, f"{esc(error)}\n\n{USAGE}", bcid=bcid, preview=False)
 
-    o = {"id": uuid.uuid4().hex[:8], **parsed, "currency": currency, "lang": lang, "bcid": bcid,
-         "chat": chat, "mid": None, "maker": maker, "status": "pending", "created": now,
-         "expires": now + OFFER_TTL}
+    o = {"id": uuid.uuid4().hex[:8], **parsed, "currency": currency, "bcid": bcid, "chat": chat, "mid": None,
+         "maker": maker, "status": "pending", "created": now, "expires": now + OFFER_TTL}
     offers[o["id"]] = o
     save()
 
-    text_preview = offer_text(o)
-    log.info(
-        "make_offer -> card | id=%s | lang=%s | currency=%s | preview=%r",
-        o["id"], lang, currency, _log_preview(text_preview, 80)
-    )
-
-    res = await send(chat, text_preview, offer_kb(o), bcid=bcid, preview=True, lang=lang)
+    res = await send(chat, offer_text(o), offer_kb(o), bcid=bcid, preview=True)
     if res.get("ok"):
         o["mid"] = res["result"]["message_id"]
         save()
@@ -633,15 +434,9 @@ async def make_offer(m, maker, bcid, arg, currency="STARS", lang="ru"):
         o["status"] = "dead"
         save()
         return
-    if _is_flood(desc):
-        log.warning("make_offer FLOOD | chat=%s | lang=%s | удаляю оффер %s",
-                    chat, lang, o["id"])
-        offers.pop(o["id"], None)
-        save()
+    if "PEER_FLOOD" in desc:
         return
-    offers.pop(o["id"], None)
-    save()
-    return await send(chat, f"{ERROR_TEXT[lang]['send_failed']}{esc(desc)}", bcid=bcid, lang=lang)
+    return await send(chat, f"Ошибка: {esc(desc)}", bcid=bcid)
 
 
 FINAL = {
@@ -653,10 +448,10 @@ FINAL = {
 
 
 async def settle(o, status):
-    prev_status = o.get("status")
+    o["status"] = status
+    save()
+
     if status in ("declined", "expired"):
-        o["status"] = status
-        save()
         try:
             await delete_business_message(o["bcid"], o["mid"])
         except Exception:
@@ -665,22 +460,11 @@ async def settle(o, status):
 
     text, kb = FINAL[status]
     res = await edit_offer(o, text(o), kb(o) if kb else None, preview=True)
-    if res.get("ok"):
-        o["status"] = status
-        save()
-        return
-    desc = res.get("description") or ""
-    if _is_fatal_desc(desc):
-        o["status"] = "dead"
-        save()
-        return
-    if _is_flood(desc):
-        log.warning("settle FLOOD | id=%s | status=%s | оставляю как было", o.get("id"), status)
-        if prev_status:
-            o["status"] = prev_status
+    if not res.get("ok"):
+        desc = res.get("description") or ""
+        if _is_fatal_desc(desc) or "PEER_FLOOD" in desc:
+            o["status"] = "dead"
             save()
-        return
-    log.warning("settle: edit failed (%s) для %s, статус не меняю", desc, o.get("id"))
 
 
 async def sweeper():
@@ -697,37 +481,39 @@ async def sweeper():
 
 
 async def on_callback(q):
-    parts = (q.get("data") or "").split(":")
+    parts = q.get("data", "").split(":")
     note = None
-    from_id = (q.get("from") or {}).get("id")
-    from_lang = (q.get("from") or {}).get("language_code", "ru")
     o = offers.get(parts[2]) if len(parts) == 3 and parts[0] == "of" else None
     if o is None:
-        note = "Outdated." if from_lang == "en" else "Этот оффер устарел"
+        note = "Этот оффер устарел"
     else:
-        lang = _lang(o)
         action = parts[1]
         if action == "cancel":
-            try:
-                await delete_business_message(o["bcid"], o["mid"])
-            except Exception:
-                pass
-            o["status"] = "declined"
-            save()
-            return await api("answerCallbackQuery", callback_query_id=q["id"])
+            if q["from"]["id"] != o["maker"]["id"]:
+                note = "Отменить сделку может только автор оффера"
+            else:
+                try:
+                    await delete_business_message(o["bcid"], o["mid"])
+                except Exception:
+                    pass
+                o["status"] = "declined"
+                save()
+                return await api("answerCallbackQuery", callback_query_id=q["id"])
         elif action == "done":
             if o["status"] != "accepted":
-                note = "Accept first." if lang == "en" else "Сначала нужно принять оффер"
+                note = "Сначала нужно принять оффер"
+            elif q["from"]["id"] != o["maker"]["id"]:
+                note = "Подтвердить передачу может только автор оффера"
             else:
                 await settle(o, "done")
-        elif STRICT and from_id == o["maker"]["id"] and action in ("ok", "no"):
-            note = "Own offer." if lang == "en" else "Это твой оффер: отвечать на него должен получатель"
+        elif STRICT and q["from"]["id"] == o["maker"]["id"] and action in ("ok", "no"):
+            note = "Это твой оффер: отвечать на него должен получатель"
         elif action in ("ok", "no"):
             if o["status"] != "pending":
-                note = "Already processed." if lang == "en" else "Оффер уже обработан"
+                note = "Оффер уже обработан"
             elif time.time() > o["expires"]:
                 await settle(o, "expired")
-                note = "Expired." if lang == "en" else "Срок предложения истёк"
+                note = "Срок предложения истёк"
             else:
                 await settle(o, "accepted" if action == "ok" else "declined")
     extra = {"text": note, "show_alert": True} if note else {}
@@ -755,21 +541,21 @@ async def on_connection(c):
         log.info("connection %s без user_chat_id — пропускаю приветствие", conn["id"])
         return
     if not conn["enabled"]:
-        text = "Bot disconnected. Reconnect: Settings -> Telegram Business -> Chat Automation."
+        text = "Бот отключён от профиля. Подключить снова: Настройки -> Телеграм Бизнес -> Автоматизация чатов."
     elif not conn["can_reply"]:
-        text = ("Bot connected, but no reply permission. Open Settings -> Telegram Business -> "
-                "Chat Automation, enable the permission — otherwise offers won't be created.")
+        text = ("Бот подключён, но без права отвечать на сообщения. Открой Настройки -> Телеграм Бизнес -> "
+                "Автоматизация чатов, выбери бота и включи это право — иначе офферы не создадутся.")
     else:
-        text = ("<b>Connected.</b>\n\n"
-                "In any chat:\n"
-                "<code>ooo link amount [en|ru]</code> (Stars)\n"
-                "<code>ttt link amount [en|ru]</code> (TON)\n"
-                "<code>ttt link address amount [en|ru]</code> (TON to wallet)\n\n"
-                "The message will turn into an offer card.")
+        text = ("<b>Готово, бот подключён.</b>\n\n"
+                "В любом чате напиши:\n"
+                "<code>ooo ссылка сумма</code> (звeзды)\n"
+                "<code>ttt ссылка сумма</code> (TON)\n"
+                "<code>ttt ссылка адрес сумма</code> (TON на кошелек)\n\n"
+                "Сообщение тут же превратится в карточку оффера с кнопками.")
         if not conn["can_delete"]:
-            text += ("\n\nWithout \"Delete messages\" permission, the command stays in chat — "
-                    "enable it in the same settings.")
-    await send(conn["chat"], text, lang="en")
+            text += ("\n\nБез права «Удалять сообщения» твоя команда останется в чате рядом с карточкой — "
+                    "включи его в тех же настройках, чтобы она пропадала.")
+    await send(conn["chat"], text)
 
 
 async def get_connection(bcid):
@@ -784,41 +570,28 @@ async def get_connection(bcid):
 
 async def on_business_message(m):
     text = (m.get("text") or "").strip()
-    cmd, _, raw_arg = text.partition(" ")
-    cmd = cmd.lower()
-    raw_arg = raw_arg.strip()
-
-    log.info("on_business_message | text=%r | cmd=%r | raw_arg=%r", text, cmd, raw_arg)
+    cmd = text.partition(" ")[0].lower()
 
     if cmd == "ooo":
         currency = "STARS"
     elif cmd == "ttt":
         currency = "TON"
     else:
-        log.info("on_business_message: unknown cmd=%r, skip", cmd)
         return
-
-    arg, lang = split_lang(raw_arg)
 
     conn = await get_connection(m["business_connection_id"])
     frm = m.get("from") or {}
     if not conn or frm.get("id") != conn["user_id"]:
-        log.info("on_business_message: conn missing or from mismatch")
-        return
-    if not conn["chat"]:
-        log.warning("on_business_message: conn['chat'] is None, skip")
         return
     if not (conn["enabled"] and conn["can_reply"]):
-        return await send(conn["chat"], "У бота нет права отвечать на сообщения.", lang="ru")
+        return await send(conn["chat"], "У бота нет права отвечать на сообщения.")
 
     maker = {"id": frm["id"], "name": frm.get("first_name", ""), "username": frm.get("username")}
-    await make_offer(m, maker, conn["id"], arg, currency, lang)
+    await make_offer(m, maker, conn["id"], currency)
 
 
 async def on_message(m):
-    chat = (m.get("chat") or {}).get("id")
-    if not chat:
-        return
+    chat = m["chat"]["id"]
     cmd = (m.get("text") or "").strip().split()[:1]
     cmd = cmd[0].split("@")[0].lower() if cmd else ""
     if cmd in ("/start", "/help"):
@@ -846,12 +619,7 @@ async def handle(update):
 
 async def webhook(req):
     token = req.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    if not SECRET:
-        return web.Response(status=403)
-    try:
-        if not hmac.compare_digest(token.encode(), SECRET.encode()):
-            return web.Response(status=403)
-    except TypeError:
+    if not hmac.compare_digest(token.encode(), SECRET.encode()):
         return web.Response(status=403)
     try:
         update = await req.json()
@@ -877,7 +645,6 @@ async def keepalive():
 
 async def poll_updates():
     await api("deleteWebhook")
-    await asyncio.sleep(1)
     offset = 0
     while True:
         try:
@@ -910,12 +677,7 @@ async def main():
         app.router.add_post("/webhook", webhook)
         runner = web.AppRunner(app)
         await runner.setup()
-        port = int(os.environ.get("PORT", 10000))
-        try:
-            await web.TCPSite(runner, "0.0.0.0", port).start()
-        except OSError as e:
-            log.error("порт %s занят: %s", port, e)
-            raise
+        await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
         await api("setWebhook", url=f"{PUBLIC_URL}/webhook", secret_token=SECRET,
                   allowed_updates=UPDATES, drop_pending_updates=True)
         background(keepalive())
