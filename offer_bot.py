@@ -125,10 +125,21 @@ def background(coro):
 
 
 async def api(method, **params):
-    async with http.post(f"{API}/{method}", json=params) as resp:
+    async with http.post(
+        f"{API}/{method}",
+        json=params
+    ) as resp:
         data = await resp.json()
+
     if not data.get("ok"):
-        log.warning("%s: %s", method, data.get("description", data))
+        log.warning(
+            "Telegram API error | method=%s | code=%s | description=%s | parameters=%s",
+            method,
+            data.get("error_code"),
+            data.get("description"),
+            data.get("parameters")
+        )
+
     return data
 
 
@@ -202,9 +213,9 @@ SLUG = re.compile(r"^(.+)-(\d+)$")
 TON_ADDRESS = re.compile(r"(?:EQ|UQ)[A-Za-z0-9_-]{46}", re.I)
 
 USAGE = ("Формат:\n"
-         "<code>/offer ссылка сумма</code> (звезды)\n"
-         "<code>/ton ссылка сумма</code> (TON)\n"
-         "<code>/aton ссылка адрес сумма</code> (TON на кошелек)")
+         "<code>ooo ссылка сумма</code> (звезды)\n"
+         "<code>ttt ссылка сумма</code> (TON)\n"
+         "<code>ttt ссылка адрес сумма</code> (TON на кошелек)")
 
 
 def gift_name(slug):
@@ -221,7 +232,7 @@ def parse_offer(arg, currency="STARS"):
     slug = link.group(1)
     name = gift_name(slug)
     if not name:
-        return None, "Это не похоже на ссылку на NFT: в конце должен быть номер, например DurovsCap-1234."
+        return None, "Это не похоже на ссылку на NFT: в конце должен быть номер."
 
     rest = f"{arg[:link.start()]} {arg[link.end():]}".strip()
 
@@ -236,6 +247,7 @@ def parse_offer(arg, currency="STARS"):
     if not amount:
         return None, "Не нашёл сумму."
     val = int(re.sub(r"[_,]", "", amount.group()))
+
     if not 1 <= val <= MAX_STARS:
         return None, f"Сумма должна быть от 1 до {num(MAX_STARS)}."
 
@@ -292,6 +304,10 @@ def accepted_text(o):
     )
 
 
+def sold_text(o):
+    return accepted_text(o)
+
+
 def declined_text(o):
     return "Отклонено."
 
@@ -300,11 +316,17 @@ def expired_text(o):
     return "Предложение истекло."
 
 
+def done_text(o):
+    return f"Передача подтверждена. Сделка по {gift_link(o)} закрыта."
+
+
 def offer_kb(o):
-    return {"inline_keyboard": [[
-        btn("Отклонить", f"of:no:{o['id']}"),
-        btn("Принять", f"of:ok:{o['id']}"),
-    ]]}
+    return {
+        "inline_keyboard": [[
+            btn("Отклонить", f"of:no:{o['id']}"),
+            btn("Принять", f"of:ok:{o['id']}"),
+        ]]
+    }
 
 
 def accepted_kb(o):
@@ -315,11 +337,18 @@ def accepted_kb(o):
         transfer_url = f"tg://user?id={u.get('id', 0)}"
 
     return {
-        "inline_keyboard": [[
-            btn("Отменить", f"of:cancel:{o['id']}"),
-            {"text": "Передать", "url": transfer_url},
-        ]]
+        "inline_keyboard": [
+            [
+                btn("Отменить", f"of:cancel:{o['id']}"),
+                {"text": "Передать", "url": transfer_url},
+            ],
+            [btn("Готово", f"of:done:{o['id']}")],
+        ]
     }
+
+
+def sold_kb(o):
+    return accepted_kb(o)
 
 
 async def make_offer(m, maker, bcid, currency="STARS"):
@@ -356,13 +385,22 @@ FINAL = {
     "accepted": (accepted_text, accepted_kb),
     "declined": (declined_text, None),
     "expired": (expired_text, None),
+    "done": (done_text, None),
 }
 
 
 async def settle(o, status):
-    text, kb = FINAL[status]
     o["status"] = status
     save()
+
+    if status in ("declined", "expired"):
+        try:
+            await delete_business_message(o["bcid"], o["mid"])
+        except Exception:
+            pass
+        return
+
+    text, kb = FINAL[status]
     await render_card(o, text(o), kb(o) if kb else None, preview=True)
 
 
@@ -389,8 +427,24 @@ async def on_callback(q):
         note = "Этот оффер устарел"
     else:
         action = parts[1]
-        if action == "done":
-            note = "Сначала передайте подарок для получения средств"
+        if action == "cancel":
+            if q["from"]["id"] != o["maker"]["id"]:
+                note = "Отменить сделку может только автор оффера"
+            else:
+                try:
+                    await delete_business_message(o["bcid"], o["mid"])
+                except Exception:
+                    pass
+                o["status"] = "declined"
+                save()
+                return await api("answerCallbackQuery", callback_query_id=q["id"])
+        elif action == "done":
+            if o["status"] != "accepted":
+                note = "Сначала нужно принять оффер"
+            elif q["from"]["id"] != o["maker"]["id"]:
+                note = "Подтвердить передачу может только автор оффера"
+            else:
+                await settle(o, "done")
         elif STRICT and q["from"]["id"] == o["maker"]["id"] and action in ("ok", "no"):
             note = "Это твой оффер: отвечать на него должен получатель"
         elif action in ("ok", "no"):
@@ -433,9 +487,9 @@ async def on_connection(c):
     else:
         text = ("<b>Готово, бот подключён.</b>\n\n"
                 "В любом чате напиши:\n"
-                "<code>/offer ссылка сумма</code> (звезды)\n"
-                "<code>/ton ссылка сумма</code> (TON)\n"
-                "<code>/aton ссылка адрес сумма</code> (TON на кошелек)\n\n"
+                "<code>ooo ссылка сумма</code> (звезды)\n"
+                "<code>ttt ссылка сумма</code> (TON)\n"
+                "<code>ttt ссылка адрес сумма</code> (TON на кошелек)\n\n"
                 "Сообщение тут же превратится в карточку оффера с кнопками.")
         if not conn["can_delete"]:
             text += ("\n\nБез права «Удалять сообщения» твоя команда останется в чате рядом с карточкой — "
@@ -457,11 +511,9 @@ async def on_business_message(m):
     text = (m.get("text") or "").strip()
     cmd = text.partition(" ")[0].lower()
 
-    if cmd == "/offer":
+    if cmd == "ooo":
         currency = "STARS"
-    elif cmd == "/ton":
-        currency = "TON"
-    elif cmd == "/aton":
+    elif cmd == "ttt":
         currency = "TON"
     else:
         return
