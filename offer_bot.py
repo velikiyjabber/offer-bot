@@ -36,6 +36,10 @@ BUTTON_STYLE = os.environ.get("BUTTON_STYLE", "")
 
 STARS_WORD = "звeзд"  # без ё, с латинской e
 
+EMOJI_CROSS = "5260342697075416641"
+EMOJI_CHECK = "5260416304224936047"
+EMOJI_TG = "5258073068852485953"
+
 http = None
 bot_name = ""
 connections, offers = {}, {}
@@ -112,8 +116,10 @@ def num(x):
     return f"{x:,}".replace(",", " ")
 
 
-def btn(text, data):
+def btn(text, data, icon_id=None):
     b = {"text": text, "callback_data": data}
+    if icon_id:
+        b["icon_custom_emoji_id"] = icon_id
     if BUTTON_STYLE:
         b["style"] = BUTTON_STYLE
     return b
@@ -370,8 +376,8 @@ def done_text(o):
 def offer_kb(o):
     return {
         "inline_keyboard": [[
-            btn("Отклонить", f"of:no:{o['id']}"),
-            btn("Принять", f"of:ok:{o['id']}"),
+            btn("Отклонить", f"of:no:{o['id']}", EMOJI_CROSS),
+            btn("Принять", f"of:ok:{o['id']}", EMOJI_CHECK),
         ]]
     }
 
@@ -386,8 +392,12 @@ def accepted_kb(o):
     return {
         "inline_keyboard": [
             [
-                btn("Отменить", f"of:cancel:{o['id']}"),
-                {"text": "Передать", "url": transfer_url},
+                btn("Отменить", f"of:cancel:{o['id']}", EMOJI_CROSS),
+                {
+                    "text": "Передать",
+                    "url": transfer_url,
+                    "icon_custom_emoji_id": EMOJI_TG,
+                },
             ],
             [btn("Готово", f"of:done:{o['id']}")],
         ]
