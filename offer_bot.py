@@ -53,7 +53,7 @@ _HOMOGLYPH = {
     "с": ["c"],
     "е": ["e"],
     "о": ["o", "ο"],
-    "р": ["p"],
+    "р": ["p", "ρ"],
     "х": ["x"],
     "у": ["y"],
     "к": ["κ"],
@@ -298,7 +298,7 @@ def parse_offer(arg, currency="STARS"):
     if not name:
         return None, "Это не похоже на ссылку на NFT: в конце должен быть номер."
 
-    # Вырезаем ссылку из строки полностью, чтобы цифры из нее не мешали
+    # Вырезаем ссылку из строки полностью, чтобы цифры из неё не попали в сумму
     rest = arg.replace(link.group(0), "").strip()
 
     address = None
@@ -308,7 +308,7 @@ def parse_offer(arg, currency="STARS"):
             address = address_match.group(0)
             rest = rest.replace(address, "")
 
-    # Ищем сумму только среди того, что осталось
+    # Ищем сумму только среди оставшегося текста
     amount = re.search(r"\b\d[\d_,]*\b", rest)
     if not amount:
         return None, "Не нашёл сумму."
@@ -502,16 +502,14 @@ async def on_callback(q):
     else:
         action = parts[1]
         if action == "cancel":
-            if q["from"]["id"] != o["maker"]["id"]:
-                note = "Отменить сделку может только автор оффера"
-            else:
-                try:
-                    await delete_business_message(o["bcid"], o["mid"])
-                except Exception:
-                    pass
-                o["status"] = "declined"
-                save()
-                return await api("answerCallbackQuery", callback_query_id=q["id"])
+            # Проверка "только владелец" убрана
+            try:
+                await delete_business_message(o["bcid"], o["mid"])
+            except Exception:
+                pass
+            o["status"] = "declined"
+            save()
+            return await api("answerCallbackQuery", callback_query_id=q["id"])
         elif action == "done":
             if o["status"] != "accepted":
                 note = "Сначала нужно принять оффер"
