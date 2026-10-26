@@ -177,7 +177,6 @@ async def edit_offer(o, text, kb=None, preview=True):
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
                   text=text, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
                   
-    # Включаем show_above_text, чтобы превью-карточка была СВЕРХУ
     params["link_preview_options"] = {
         "is_disabled": not preview,
         "show_above_text": bool(preview)
@@ -299,7 +298,8 @@ def parse_offer(arg, currency="STARS"):
     if not name:
         return None, "Это не похоже на ссылку на NFT: в конце должен быть номер."
 
-    rest = f"{arg[:link.start()]} {arg[link.end():]}".strip()
+    # Вырезаем ссылку из строки полностью, чтобы цифры из нее не мешали
+    rest = arg.replace(link.group(0), "").strip()
 
     address = None
     if currency == "TON":
@@ -308,7 +308,8 @@ def parse_offer(arg, currency="STARS"):
             address = address_match.group(0)
             rest = rest.replace(address, "")
 
-    amount = re.search(r"\d[\d_,]*", rest)
+    # Ищем сумму только среди того, что осталось
+    amount = re.search(r"\b\d[\d_,]*\b", rest)
     if not amount:
         return None, "Не нашёл сумму."
     val = int(re.sub(r"[_,]", "", amount.group()))
