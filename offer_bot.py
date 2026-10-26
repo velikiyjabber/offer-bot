@@ -169,24 +169,64 @@ async def edit_offer(o, text, kb=None, preview=True):
     return res
 
 
+FATAL_DESC_MARKERS = (
+    "invalid message identifier",
+    "message to edit not found",
+    "business_connection_invalid",
+    "business connection invalid",
+)
+
+
+def _is_fatal_desc(desc: str) -> bool:
+    d = (desc or "").lower()
+    return any(m in d for m in FATAL_DESC_MARKERS)
+
+
 async def render_card(o, text, kb, preview=True):
     res = await edit_offer(o, text, kb, preview=preview)
     if res.get("ok"):
         return res
-    desc = (res.get("description") or "").lower()
-    if "invalid message identifier" in desc or "message to edit not found" in desc:
-        log.warning("карточка %s не существует, помечаю оффер dead", o.get("id"))
+    desc = res.get("description") or ""
+    if _is_fatal_desc(desc):
+        log.warning("карточка %s мертва (%s), помечаю dead", o.get("id"), desc)
         o["status"] = "dead"
         save()
-        return {"ok": False, "description": "message not found"}
-    log.warning("edit упал (%s), пересоздаю карточку %s", res.get("description"), o["id"])
+        return {"ok": False, "description": "dead"}
+    log.warning("edit упал (%s), пересоздаю карточку %s", desc, o["id"])
     res2 = await send(o["chat"], text, kb, o["bcid"], preview=preview)
     if res2.get("ok"):
         o["mid"] = res2["result"]["message_id"]
         save()
-    else:
-        log.error("не удалось пересоздать карточку %s: %s", o["id"], res2.get("description"))
+        return res2
+    desc2 = res2.get("description") or ""
+    if _is_fatal_desc(desc2):
+        o["status"] = "dead"
+        save()
+    log.error("не удалось пересоздать карточку %s: %s", o["id"], desc2)
     return res2
+
+
+async def validate_connections():
+    """Проверяет все bcid из connections/offers, помечает мёртвые офферы."""
+    if not connections and not offers:
+        return
+    valid = set()
+    bcids = set(connections.keys())
+    for o in offers.values():
+        if o.get("bcid") and o.get("status") in ("pending", "accepted"):
+            bcids.add(o["bcid"])
+    for bcid in bcids:
+        res = await api("getBusinessConnection", business_connection_id=bcid)
+        if res.get("ok"):
+            valid.add(bcid)
+            if bcid not in connections:
+                connections[bcid] = conn_from(res["result"])
+        else:
+            log.warning("bcid %s невалиден, офферы с ним станут dead", bcid)
+    for o in offers.values():
+        if o.get("bcid") not in valid and o.get("status") in ("pending", "accepted"):
+            o["status"] = "dead"
+    save()
 
 
 def save():
@@ -380,11 +420,15 @@ async def make_offer(m, maker, bcid, currency="STARS"):
     if res.get("ok"):
         o["mid"] = res["result"]["message_id"]
         save()
-    else:
-        desc = res.get("description", "")
-        if "PEER_FLOOD" in desc:
-            return await send(chat, "Telegram временно ограничил отправку сообщений.", bcid=bcid)
-        return await send(chat, f"Ошибка: {esc(desc)}", bcid=bcid)
+        return
+    desc = res.get("description", "")
+    if _is_fatal_desc(desc):
+        o["status"] = "dead"
+        save()
+        return
+    if "PEER_FLOOD" in desc:
+        return
+    return await send(chat, f"Ошибка: {esc(desc)}", bcid=bcid)
 
 
 FINAL = {
@@ -409,8 +453,8 @@ async def settle(o, status):
     text, kb = FINAL[status]
     res = await edit_offer(o, text(o), kb(o) if kb else None, preview=True)
     if not res.get("ok"):
-        desc = (res.get("description") or "").lower()
-        if "invalid message identifier" in desc or "message to edit not found" in desc:
+        desc = res.get("description") or ""
+        if _is_fatal_desc(desc) or "PEER_FLOOD" in desc:
             o["status"] = "dead"
             save()
 
@@ -419,10 +463,10 @@ async def sweeper():
     while True:
         await asyncio.sleep(60)
         for o in list(offers.values()):
-            if o["status"] != "pending":
+            if o["status"] not in ("pending", "accepted"):
                 continue
             try:
-                if o["expires"] < time.time():
+                if o["status"] == "pending" and o["expires"] < time.time():
                     await settle(o, "expired")
             except Exception:
                 pass
@@ -617,6 +661,7 @@ async def main():
     bot_name = me["username"]
     log.info("юзернейм бота: @%s (https://t.me/%s)", bot_name, bot_name)
     await api("setMyCommands", commands=[{"command": "start", "description": "Подключение"}])
+    await validate_connections()
     background(sweeper())
     if PUBLIC_URL:
         app = web.Application()
