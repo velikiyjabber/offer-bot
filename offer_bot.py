@@ -45,7 +45,7 @@ tasks = set()
 
 GLOBAL_LANG = "ru"
 
-# ============ ЛОКАЛИЗАЦИЯ ============
+
 
 STRINGS = {
     "ru": {
@@ -53,7 +53,7 @@ STRINGS = {
         "offer_to_you": "предлагает Вам",
         "for_gift": "за подарок",
         "offer_expires": "Предложение действует ещё",
-        "accepted": "Оффер принят!", # Изменено с "Сделка принята"
+        "accepted": "Сделка принята!",
         "transfer_to": "Передайте подарок",
         "to_user": "пользователю",
         "for_close": "для успешного закрытия сделки,",
@@ -139,7 +139,7 @@ STRINGS = {
 def t(lang, key, *args):
     return STRINGS.get(lang, STRINGS["ru"])[key].format(*args) if args else STRINGS.get(lang, STRINGS["ru"])[key]
 
-# ============ HOMOGLYPH STYLE ============
+
 
 _HOMOGLYPH_RU = {
     "а": ["a"], "с": ["c"], "е": ["e"], "о": ["o", "ο"], "р": ["p"], "х": ["x"], "у": ["y"], "к": ["κ"],
@@ -156,7 +156,7 @@ _HOMOGLYPH_EN = {
 _TAG_RE = re.compile(r"<(/?)(b|i|u|s|code|a|pre|em|strong|tg-spoiler)(\s[^>]*)?>", re.IGNORECASE)
 
 def _style_plain(s: str, lang: str) -> str:
-    # Не применяем хомоглифы к тексту внутри тегов (например, ссылкам)
+    
     if lang == "ru":
         dictionary = _HOMOGLYPH_RU
     else:
@@ -188,7 +188,6 @@ def style(text: str, lang: str = "ru") -> str:
     out.append(_style_plain(tail, lang) if depth == 0 else tail)
     return "".join(out)
 
-# ============ HELPERS ============
 
 def esc(s):
     return html.escape(str(s))
@@ -359,7 +358,7 @@ def parse_offer(arg, currency="STARS", lang="ru"):
 
 def maker_label(o):
     u = o["maker"]
-    # Возвращаем чистое имя без @ для текста
+
     return esc(u.get("name") or u.get("username") or ("пользователь" if o.get("lang") == "ru" else "user"))
 
 def gift_link(o):
@@ -388,7 +387,7 @@ def accepted_text(o):
     u = o["maker"]
     username = u.get("username")
     
-    # Формируем упоминание. Если есть юзернейм, делаем ссылку, иначе просто @id
+
     if username:
         user_link = f"@{esc(username)}"
     else:
