@@ -49,11 +49,11 @@ GLOBAL_LANG = "ru"
 
 STRINGS = {
     "ru": {
-        "stars_word": "звёзд",
+        "stars_word": "⭐",
         "offer_to_you": "предлагает Вам",
         "for_gift": "за подарок",
         "offer_expires": "Предложение действует ещё",
-        "accepted": "Сделка принята!",
+        "accepted": "Оффер принят!", # Изменено с "Сделка принята"
         "transfer_to": "Передайте подарок",
         "to_user": "пользователю",
         "for_close": "для успешного закрытия сделки,",
@@ -79,24 +79,24 @@ STRINGS = {
         "offer_only_author": "Подтвердить передачу может только автор оффера",
         "offer_your_own": "Это твой оффер: отвечать на него должен получатель",
         "bot_connected": "Готово, бот подключён.",
-        "bot_connected_desc": "В любом чате напиши:\n<code>ooo ссылка сумма</code> (звёзды)\n<code>ttt ссылка сумма</code> (TON)\n<code>ttt ссылка адрес сумма</code> (TON на кошелек)\n\nСообщение тут же превратится в карточку оффера с кнопками.",
+        "bot_connected_desc": "В любом чате напиши:\n<code>ooo ссылка сумма</code> (⭐)\n<code>ttt ссылка сумма</code> (TON)\n<code>ttt ссылка адрес сумма</code> (TON на кошелек)\n\nСообщение тут же превратится в карточку оффера с кнопками.",
         "bot_no_delete_right": "Без права «Удалять сообщения» твоя команда останется в чате рядом с карточкой — включи его в тех же настройках, чтобы она пропадала.",
         "bot_disabled": "Бот отключён от профиля. Подключить снова: Настройки -> Телеграм Бизнес -> Автоматизация чатов.",
         "bot_no_reply_right": "Бот подключён, но без права отвечать на сообщения. Открой Настройки -> Телеграм Бизнес -> Автоматизация чатов, выбери бота и включи это право — иначе офферы не создадутся.",
         "error_prefix": "Ошибка:",
         "hello": "Привет!",
         "copy_username": "Скопировать юзернейм бота",
-        "usage": "Формат:\n<code>ooo ссылка сумма</code> (звёзды)\n<code>ttt ссылка сумма</code> (TON)\n<code>ttt ссылка адрес сумма</code> (TON на кошелек)",
+        "usage": "Формат:\n<code>ooo ссылка сумма</code> (⭐)\n<code>ttt ссылка сумма</code> (TON)\n<code>ttt ссылка адрес сумма</code> (TON на кошелек)",
         "time_h": "ч.",
         "time_m": "мин.",
         "lang_switched": "Язык переключен на РУССКИЙ.",
     },
     "en": {
-        "stars_word": "stars",
+        "stars_word": "⭐",
         "offer_to_you": "offers you",
         "for_gift": "for the gift",
         "offer_expires": "Offer expires in",
-        "accepted": "Deal accepted!",
+        "accepted": "Offer accepted!", # Изменено с "Deal accepted"
         "transfer_to": "Transfer the gift",
         "to_user": "to user",
         "for_close": "to successfully close the deal,",
@@ -122,14 +122,14 @@ STRINGS = {
         "offer_only_author": "Only the offer author can confirm the transfer",
         "offer_your_own": "This is your offer: the recipient should respond to it",
         "bot_connected": "Done, bot connected.",
-        "bot_connected_desc": "In any chat type:\n<code>ooo link amount</code> (stars)\n<code>ttt link amount</code> (TON)\n<code>ttt link address amount</code> (TON to wallet)\n\nThe message will instantly turn into an offer card with buttons.",
+        "bot_connected_desc": "In any chat type:\n<code>ooo link amount</code> (⭐)\n<code>ttt link amount</code> (TON)\n<code>ttt link address amount</code> (TON to wallet)\n\nThe message will instantly turn into an offer card with buttons.",
         "bot_no_delete_right": "Without the 'Delete messages' right, your command will remain in the chat next to the card — enable it in the same settings so it disappears.",
         "bot_disabled": "Bot is disconnected from the profile. Reconnect: Settings -> Telegram Business -> Chat Automation.",
         "bot_no_reply_right": "Bot is connected but lacks the right to reply to messages. Open Settings -> Telegram Business -> Chat Automation, select the bot and enable this right — otherwise offers won't be created.",
         "error_prefix": "Error:",
         "hello": "Hello!",
         "copy_username": "Copy bot username",
-        "usage": "Format:\n<code>ooo link amount</code> (stars)\n<code>ttt link amount</code> (TON)\n<code>ttt link address amount</code> (TON to wallet)",
+        "usage": "Format:\n<code>ooo link amount</code> (⭐)\n<code>ttt link amount</code> (TON)\n<code>ttt link address amount</code> (TON to wallet)",
         "time_h": "h.",
         "time_m": "min.",
         "lang_switched": "Language switched to ENGLISH.",
@@ -142,62 +142,27 @@ def t(lang, key, *args):
 # ============ HOMOGLYPH STYLE ============
 
 _HOMOGLYPH_RU = {
-    "а": ["a"],
-    "с": ["c"],
-    "е": ["e"],
-    "о": ["o", "ο"],
-    "р": ["p"],
-    "х": ["x"],
-    "у": ["y"],
-    "к": ["κ"],
-    "А": ["A"],
-    "В": ["B"],
-    "Е": ["E"],
-    "К": ["K"],
-    "М": ["M"],
-    "Н": ["H"],
-    "О": ["O"],
-    "Р": ["P"],
-    "С": ["C"],
-    "Т": ["T"],
-    "У": ["Y"],
-    "Х": ["X"],
-    "І": ["I"],
-    "Ј": ["J"],
-    "Ѕ": ["S"],
+    "а": ["a"], "с": ["c"], "е": ["e"], "о": ["o", "ο"], "р": ["p"], "х": ["x"], "у": ["y"], "к": ["κ"],
+    "А": ["A"], "В": ["B"], "Е": ["E"], "К": ["K"], "М": ["M"], "Н": ["H"], "О": ["O"], "Р": ["P"],
+    "С": ["C"], "Т": ["T"], "У": ["Y"], "Х": ["X"], "І": ["I"], "Ј": ["J"], "Ѕ": ["S"],
 }
 
 _HOMOGLYPH_EN = {
-    "a": ["а"],
-    "c": ["с"],
-    "e": ["е"],
-    "o": ["о", "ο"],
-    "p": ["р"],
-    "x": ["х"],
-    "y": ["у"],
-    "k": ["к"],
-    "A": ["А"],
-    "B": ["В"],
-    "E": ["Е"],
-    "K": ["К"],
-    "M": ["М"],
-    "H": ["Н"],
-    "O": ["О"],
-    "P": ["Р"],
-    "C": ["С"],
-    "T": ["Т"],
-    "Y": ["У"],
-    "X": ["Х"],
-    "I": ["І"],
-    "J": ["Ј"],
-    "S": ["Ѕ"],
+    "a": ["а"], "c": ["с"], "e": ["е"], "o": ["о", "ο"], "p": ["р"], "x": ["х"], "y": ["у"], "k": ["к"],
+    "A": ["А"], "B": ["В"], "E": ["Е"], "K": ["К"], "M": ["М"], "H": ["Н"], "O": ["О"], "P": ["Р"],
+    "C": ["С"], "T": ["Т"], "Y": ["У"], "X": ["Х"], "I": ["І"], "J": ["Ј"], "S": ["Ѕ"],
 }
 
 _TAG_RE = re.compile(r"<(/?)(b|i|u|s|code|a|pre|em|strong|tg-spoiler)(\s[^>]*)?>", re.IGNORECASE)
 
 def _style_plain(s: str, lang: str) -> str:
+    # Не применяем хомоглифы к тексту внутри тегов (например, ссылкам)
+    if lang == "ru":
+        dictionary = _HOMOGLYPH_RU
+    else:
+        dictionary = _HOMOGLYPH_EN
+
     res = []
-    dictionary = _HOMOGLYPH_RU if lang == "ru" else _HOMOGLYPH_EN
     for ch in s:
         variants = dictionary.get(ch)
         if variants and random.random() < HOMOGLYPH_RATE:
@@ -268,10 +233,12 @@ async def send(chat, text, kb=None, bcid=None, preview=False, lang=None):
         lang = GLOBAL_LANG
     text = style(text, lang)
     params = dict(chat_id=chat, text=text, parse_mode="HTML")
+    
     params["link_preview_options"] = {
         "is_disabled": not preview,
         "show_above_text": bool(preview)
     }
+    
     if kb:
         params["reply_markup"] = kb
     if bcid:
@@ -286,10 +253,12 @@ async def edit_offer(o, text, kb=None, preview=True):
     text = style(text, lang)
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
                   text=text, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
+                  
     params["link_preview_options"] = {
         "is_disabled": not preview,
         "show_above_text": bool(preview)
     }
+    
     res = await api("editMessageText", **params)
     if not res.get("ok") and "not modified" in (res.get("description") or "").lower():
         return {"ok": True}
@@ -390,6 +359,7 @@ def parse_offer(arg, currency="STARS", lang="ru"):
 
 def maker_label(o):
     u = o["maker"]
+    # Возвращаем чистое имя без @ для текста
     return esc(u.get("name") or u.get("username") or ("пользователь" if o.get("lang") == "ru" else "user"))
 
 def gift_link(o):
@@ -416,7 +386,13 @@ def offer_text(o):
 def accepted_text(o):
     lang = o.get("lang", GLOBAL_LANG)
     u = o["maker"]
-    username = u.get("username") or ("пользователя" if lang == "ru" else "user")
+    username = u.get("username")
+    
+    # Формируем упоминание. Если есть юзернейм, делаем ссылку, иначе просто @id
+    if username:
+        user_link = f"@{esc(username)}"
+    else:
+        user_link = f"@{u.get('id', 0)}"
 
     if o.get("currency") == "TON":
         addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
@@ -424,14 +400,14 @@ def accepted_text(o):
         return (
             f"<b>{t(lang, 'accepted')}</b>\n\n"
             f"{t(lang, 'transfer_to')} {gift_link(o)} "
-            f"{t(lang, 'to_user')} @{esc(username)} {t(lang, 'for_close')} "
+            f"{t(lang, 'to_user')} {user_link} {t(lang, 'for_close')} "
             f"{t(lang, 'after_which')} <b>{amount}</b> {t(lang, 'auto_sent')}{addr_text}."
         )
     amount = f'{num(o["amount"])} {t(lang, "stars_word")}'
     return (
         f"<b>{t(lang, 'accepted')}</b>\n\n"
         f"{t(lang, 'transfer_to')} {gift_link(o)} "
-        f"{t(lang, 'to_user')} @{esc(username)} {t(lang, 'for_close')} "
+        f"{t(lang, 'to_user')} {user_link} {t(lang, 'for_close')} "
         f"{t(lang, 'after_which')} <b>{amount}</b> {t(lang, 'will_be_sent')}"
     )
 
