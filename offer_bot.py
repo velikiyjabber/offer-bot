@@ -63,6 +63,7 @@ STRINGS = {
         "after_which": "после чего",
         "will_be_sent": "отправятся на ваш баланс.",
         "auto_sent": "автоматически отправятся на ваш баланс",
+        "ton_sent_to_addr": "автоматически отправятся на ваш адрес",
         "declined": "Отклонено.",
         "expired": "Предложение истекло.",
         "done": "Передача подтверждена. Сделка по",
@@ -109,6 +110,7 @@ STRINGS = {
         "after_which": "after which",
         "will_be_sent": "will be sent to your balance.",
         "auto_sent": "will be automatically sent to your balance",
+        "ton_sent_to_addr": "will be automatically sent to your address",
         "declined": "Declined.",
         "expired": "Offer expired.",
         "done": "Transfer confirmed. Deal for",
@@ -389,11 +391,14 @@ def accepted_text(o):
         user_link = f'<a href="tg://user?id={u["id"]}">ID:{u["id"]}</a>'
 
     if o.get("currency") == "TON":
-        addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
+        if o.get("address"):
+            tail = f"{t(lang, 'ton_sent_to_addr')} <code>{esc(o['address'])}</code>."
+        else:
+            tail = f"{t(lang, 'auto_sent')}."
         return (f"<b>{t(lang, 'accepted')}</b>\n\n{t(lang, 'transfer_to')} {gift_link(o)} "
                 f"{t(lang, 'to_user')} {user_link} {t(lang, 'for_close')} "
-                f"{t(lang, 'after_which')} <b>{amount}</b> {t(lang, 'auto_sent')}{addr_text}.")
+                f"{t(lang, 'after_which')} <b>{amount}</b> {tail}")
     amount = f'{num(o["amount"])} {t(lang, "stars_word")}'
     return (f"<b>{t(lang, 'accepted')}</b>\n\n{t(lang, 'transfer_to')} {gift_link(o)} "
             f"{t(lang, 'to_user')} {user_link} {t(lang, 'for_close')} "
@@ -507,16 +512,12 @@ async def on_message(m):
 
 async def on_callback(q):
     frm = q.get("from") or {}
-    parts = q.get("data", "").split(":")
-    is_offer_cb = len(parts) == 3 and parts[0] == "of"
-
-    # Callback'и по офферам (of:*) может нажимать ЛЮБОЙ пользователь.
-    # Whitelist проверяется только для остальных callback'ов.
-    if not is_offer_cb and not is_allowed(frm.get("id")):
+    if not is_allowed(frm.get("id")):
         return await api("answerCallbackQuery", callback_query_id=q["id"], text="Access denied", show_alert=True)
 
+    parts = q.get("data", "").split(":")
     note = None
-    o = offers.get(parts[2]) if is_offer_cb else None
+    o = offers.get(parts[2]) if len(parts) == 3 and parts[0] == "of" else None
     lang = o.get("lang", GLOBAL_LANG) if o else GLOBAL_LANG
 
     if o is None:
