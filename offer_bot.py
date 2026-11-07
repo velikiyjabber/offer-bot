@@ -34,10 +34,15 @@ OFFER_EDIT_DELAY = max(1.0, float(os.environ.get("OFFER_EDIT_DELAY", "1.0")))
 HOMOGLYPH_RATE = float(os.environ.get("HOMOGLYPH_RATE", "0.75"))
 BUTTON_STYLE = os.environ.get("BUTTON_STYLE", "")
 
-WHITELIST_URL = os.environ.get("WHITELIST_URL", "").strip()
-WHITELIST_REFRESH = 300
 _allowed_ids = set()
-_whitelist_ready = False
+_whitelist_enabled = False
+_raw_allowed = os.environ.get("ALLOWED_IDS", "").strip()
+if _raw_allowed:
+    for _id in _raw_allowed.split(","):
+        _id = _id.strip()
+        if _id.isdigit():
+            _allowed_ids.add(int(_id))
+    _whitelist_enabled = bool(_allowed_ids)
 
 EMOJI_CROSS = "5260342697075416641"
 EMOJI_CHECK = "5260416304224936047"
@@ -83,14 +88,14 @@ STRINGS = {
         "offer_only_author": "Подтвердить передачу может только автор оффера",
         "offer_your_own": "Это твой оффер: отвечать на него должен получатель",
         "bot_connected": "Готово, бот подключён.",
-        "bot_connected_desc": "В любом чате напиши:\n<code>/offer TON ссылка адрес сумма</code> (TON на кошелек)\n<code>/offer TON ссылка сумма</code> (TON)\n<code>/offer STAR ссылка сумма</code> (⭐)\n\nСменить язык: <code>/language ru</code> или <code>/language en</code>\nСообщение тут же превратится в карточку оффера с кнопками.",
+        "bot_connected_desc": "В любом чате напиши:\n<code>/offer TON ссылка сумма</code> (TON)\n<code>/offer STAR ссылка сумма</code> (⭐)\n\nСменить язык: <code>/language ru</code> или <code>/language en</code>\nСообщение тут же превратится в карточку оффера с кнопками.",
         "bot_no_delete_right": "Без права «Удалять сообщения» твоя команда останется в чате рядом с карточкой — включи его в тех же настройках, чтобы она пропадала.",
         "bot_disabled": "Бот отключён от профиля. Подключить снова: Настройки -> Телеграм Бизнес -> Автоматизация чатов.",
         "bot_no_reply_right": "Бот подключён, но без права отвечать на сообщения. Открой Настройки -> Телеграм Бизнес -> Автоматизация чатов, выбери бота и включи это право — иначе офферы не создадутся.",
         "error_prefix": "Ошибка:",
         "hello": "Привет!",
         "copy_username": "Скопировать юзернейм бота",
-        "usage": "Формат:\n<code>/offer TON ссылка адрес сумма</code> (TON на кошелек)\n<code>/offer TON ссылка сумма</code> (TON)\n<code>/offer STAR ссылка сумма</code> (⭐)",
+        "usage": "Формат:\n<code>/offer TON ссылка сумма</code> (TON)\n<code>/offer STAR ссылка сумма</code> (⭐)",
         "time_h": "ч.",
         "time_m": "мин.",
         "lang_switched": "Язык переключен на РУССКИЙ.",
@@ -129,14 +134,14 @@ STRINGS = {
         "offer_only_author": "Only the offer author can confirm the transfer",
         "offer_your_own": "This is your offer: the recipient should respond to it",
         "bot_connected": "Done, bot connected.",
-        "bot_connected_desc": "In any chat type:\n<code>/offer TON link address amount</code> (TON to wallet)\n<code>/offer TON link amount</code> (TON)\n<code>/offer STAR link amount</code> (⭐)\n\nChange language: <code>/language ru</code> or <code>/language en</code>\n\nThe message will instantly turn into an offer card with buttons.",
+        "bot_connected_desc": "In any chat type:\n<code>/offer TON link amount</code> (TON)\n<code>/offer STAR link amount</code> (⭐)\n\nChange language: <code>/language ru</code> or <code>/language en</code>\n\nThe message will instantly turn into an offer card with buttons.",
         "bot_no_delete_right": "Without the 'Delete messages' right, your command will remain in the chat next to the card — enable it in the same settings so it disappears.",
         "bot_disabled": "Bot is disconnected from the profile. Reconnect: Settings -> Telegram Business -> Chat Automation.",
         "bot_no_reply_right": "Bot is connected but lacks the right to reply to messages. Open Settings -> Telegram Business -> Chat Automation, select the bot and enable this right — otherwise offers won't be created.",
         "error_prefix": "Error:",
         "hello": "Hello!",
         "copy_username": "Copy bot username",
-        "usage": "Format:\n<code>/offer TON link address amount</code> (TON to wallet)\n<code>/offer TON link amount</code> (TON)\n<code>/offer STAR link amount</code> (⭐)",
+        "usage": "Format:\n<code>/offer TON link amount</code> (TON)\n<code>/offer STAR link amount</code> (⭐)",
         "time_h": "h.",
         "time_m": "min.",
         "lang_switched": "Language switched to ENGLISH.",
@@ -149,39 +154,9 @@ def t(lang, key, *args):
     return STRINGS.get(lang, STRINGS["ru"])[key].format(*args) if args else STRINGS.get(lang, STRINGS["ru"])[key]
 
 def is_allowed(user_id):
-    if not WHITELIST_URL:
+    if not _whitelist_enabled:
         return True
     return user_id in _allowed_ids
-
-async def fetch_whitelist():
-    global _allowed_ids, _whitelist_ready
-    if not WHITELIST_URL:
-        _whitelist_ready = True
-        return
-    try:
-        async with http.get(WHITELIST_URL, timeout=ClientTimeout(total=15)) as resp:
-            if resp.status == 200:
-                text = await resp.text()
-                new_ids = set()
-                for line in text.splitlines():
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        try:
-                            new_ids.add(int(line))
-                        except ValueError:
-                            pass
-                _allowed_ids = new_ids
-                _whitelist_ready = True
-                log.info("Whitelist updated: %d IDs", len(_allowed_ids))
-            else:
-                log.warning("Whitelist fetch failed: HTTP %d", resp.status)
-    except Exception as e:
-        log.warning("Whitelist error: %s", e)
-
-async def whitelist_worker():
-    while True:
-        await fetch_whitelist()
-        await asyncio.sleep(WHITELIST_REFRESH)
 
 _HOMOGLYPH_RU = {
     "а": ["a"], "с": ["c"], "е": ["e"], "о": ["o", "ο"], "р": ["p"], "х": ["x"], "у": ["y"], "к": ["κ"],
@@ -312,7 +287,6 @@ def load():
 
 NFT_LINK = re.compile(r"(?:https?://)?t\.me/nft/([A-Za-z0-9_-]+)", re.I)
 SLUG = re.compile(r"^(.+)-(\d+)$")
-TON_ADDRESS = re.compile(r"^(?:EQ|UQ)[A-Za-z0-9_-]{46}$", re.I)
 
 def gift_name(slug):
     m = SLUG.match(slug)
@@ -330,18 +304,7 @@ def parse_offer(args_list, currency="STARS", lang="ru"):
     if not name:
         return None, t(lang, "error_bad_link")
 
-    address = None
-    amount_str = None
-
-    if currency == "TON":
-        amount_str = args_list[-1]
-        middle = args_list[1:-1]
-        if middle:
-            address = middle[0].strip()
-    else:
-        amount_str = args_list[-1]
-
-    amount_str = amount_str.strip()
+    amount_str = args_list[-1].strip()
     if not amount_str.isdigit():
         cleaned = re.sub(r"[_,\s]", "", amount_str)
         if not cleaned.isdigit():
@@ -353,7 +316,7 @@ def parse_offer(args_list, currency="STARS", lang="ru"):
     if not 1 <= val <= MAX_STARS:
         return None, f"{t(lang, 'error_amount_range')} {num(MAX_STARS)}."
 
-    return {"slug": slug, "name": name, "amount": val, "address": address}, None
+    return {"slug": slug, "name": name, "amount": val, "address": None}, None
 
 def maker_label(o):
     u = o["maker"]
@@ -369,9 +332,8 @@ def left_text(seconds, lang):
 def offer_text(o):
     lang = o.get("lang", GLOBAL_LANG)
     if o.get("currency") == "TON":
-        addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
-        text = (f"<b>{maker_label(o)}</b> {t(lang, 'offer_to_you')} <b>{amount}</b>{addr_text} {t(lang, 'for_gift')} {gift_link(o)}.\n\n"
+        text = (f"<b>{maker_label(o)}</b> {t(lang, 'offer_to_you')} <b>{amount}</b> {t(lang, 'for_gift')} {gift_link(o)}.\n\n"
                 f"{t(lang, 'offer_expires')} {left_text(o['expires'] - time.time(), lang)}")
     else:
         amount = f'{num(o["amount"])} {t(lang, "stars_word")}'
@@ -389,11 +351,10 @@ def accepted_text(o):
         user_link = f'<a href="tg://user?id={u["id"]}">ID:{u["id"]}</a>'
 
     if o.get("currency") == "TON":
-        addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
         return (f"<b>{t(lang, 'accepted')}</b>\n\n{t(lang, 'transfer_to')} {gift_link(o)} "
                 f"{t(lang, 'to_user')} {user_link} {t(lang, 'for_close')} "
-                f"{t(lang, 'after_which')} <b>{amount}</b> {t(lang, 'auto_sent')}{addr_text}.")
+                f"{t(lang, 'after_which')} <b>{amount}</b> {t(lang, 'auto_sent')}.")
     amount = f'{num(o["amount"])} {t(lang, "stars_word")}'
     return (f"<b>{t(lang, 'accepted')}</b>\n\n{t(lang, 'transfer_to')} {gift_link(o)} "
             f"{t(lang, 'to_user')} {user_link} {t(lang, 'for_close')} "
@@ -510,8 +471,6 @@ async def on_callback(q):
     parts = q.get("data", "").split(":")
     is_offer_cb = len(parts) == 3 and parts[0] == "of"
 
-    # Callback'и по офферам (of:*) может нажимать ЛЮБОЙ пользователь.
-    # Whitelist проверяется только для остальных callback'ов.
     if not is_offer_cb and not is_allowed(frm.get("id")):
         return await api("answerCallbackQuery", callback_query_id=q["id"], text="Access denied", show_alert=True)
 
@@ -603,9 +562,6 @@ async def sweeper():
 
 async def handle(update):
     try:
-        if not _whitelist_ready and WHITELIST_URL:
-            await fetch_whitelist()
-
         if "business_connection" in update: await on_connection(update["business_connection"])
         elif "business_message" in update: await on_business_message(update["business_message"])
         elif "callback_query" in update: await on_callback(update["callback_query"])
@@ -648,9 +604,6 @@ async def main():
     me = (await api("getMe")).get("result") or {}
     if not me: raise SystemExit("BOT_TOKEN не подходит")
     bot_name = me["username"]
-
-    await fetch_whitelist()
-    background(whitelist_worker())
 
     await api("setMyCommands", commands=[{"command": "start", "description": "Start"}])
     await validate_connections()
