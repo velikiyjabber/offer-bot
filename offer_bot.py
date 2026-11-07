@@ -43,7 +43,7 @@ bot_name = ""
 connections, offers = {}, {}
 tasks = set()
 
-# ГЛОБАЛЬНЫЙ ЯЗЫК ПО УМОЛЧАНИЮ (переключается командой /lang)
+# ГЛОБАЛЬНЫЙ ЯЗЫК ПО УМОЛЧАНИЮ
 GLOBAL_LANG = "ru"
 
 # ============ ЛОКАЛИЗАЦИЯ ============
@@ -142,29 +142,72 @@ def t(lang, key, *args):
 
 # ============ СТИЛИЗАЦИЯ (Гомоглифы) ============
 
-_HOMOGLYPH = {
-    "а": ["a"], "с": ["c"], "е": ["e"], "о": ["o", "ο"], "р": ["p"], "х": ["x"], "у": ["y"], "к": ["κ"],
-    "А": ["A"], "В": ["B"], "Е": ["E"], "К": ["K"], "М": ["M"], "Н": ["H"], "О": ["O"], "Р": ["P"],
-    "С": ["C"], "Т": ["T"], "У": ["Y"], "Х": ["X"], "І": ["I"], "Ј": ["J"], "Ѕ": ["S"],
+# Для русского: заменяем кириллицу на латиницу/греческий
+_HOMOGLYPH_RU = {
+    "а": ["a"],
+    "с": ["c"],
+    "е": ["e"],
+    "о": ["o", "ο"],
+    "р": ["p", "ρ"],
+    "х": ["x"],
+    "у": ["y"],
+    "к": ["κ"],
+    "А": ["A"],
+    "В": ["B"],
+    "Е": ["E"],
+    "К": ["K"],
+    "М": ["M"],
+    "Н": ["H"],
+    "О": ["O"],
+    "Р": ["P"],
+    "С": ["C"],
+    "Т": ["T"],
+    "У": ["Y"],
+    "Х": ["X"],
+    "І": ["I"],
+    "Ј": ["J"],
+    "Ѕ": ["S"],
+}
+
+# Для английского: заменяем латиницу на кириллицу (реверс)
+_HOMOGLYPH_EN = {
+    "a": ["а"],
+    "c": ["с"],
+    "e": ["е"],
+    "o": ["о", "ο"],
+    "p": ["р"],
+    "x": ["х"],
+    "y": ["у"],
+    "k": ["к"],
+    "A": ["А"],
+    "B": ["В"],
+    "E": ["Е"],
+    "K": ["К"],
+    "M": ["М"],
+    "H": ["Н"],
+    "O": ["О"],
+    "P": ["Р"],
+    "C": ["С"],
+    "T": ["Т"],
+    "Y": ["У"],
+    "X": ["Х"],
+    "I": ["І"],
+    "J": ["Ј"],
+    "S": ["Ѕ"],
 }
 
 _TAG_RE = re.compile(r"<(/?)(b|i|u|s|code|a|pre|em|strong|tg-spoiler)(\s[^>]*)?>", re.IGNORECASE)
 
 def _style_plain(s: str, lang: str) -> str:
     res = []
+    dictionary = _HOMOGLYPH_RU if lang == "ru" else _HOMOGLYPH_EN
+    
     for ch in s:
-        if lang == "ru":
-            variants = _HOMOGLYPH.get(ch)
-            if variants and random.random() < HOMOGLYPH_RATE:
-                res.append(random.choice(variants))
-            else:
-                res.append(ch)
+        variants = dictionary.get(ch)
+        if variants and random.random() < HOMOGLYPH_RATE:
+            res.append(random.choice(variants))
         else:
-            mapping = {"o": "о", "a": "а", "p": "р"}
-            if ch in mapping and random.random() < HOMOGLYPH_RATE:
-                res.append(mapping[ch])
-            else:
-                res.append(ch)
+            res.append(ch)
     return "".join(res)
 
 def style(text: str, lang: str = "ru") -> str:
@@ -482,7 +525,6 @@ async def on_message(m):
     text = (m.get("text") or "").strip()
     cmd = text.split()[0].split("@")[0].lower() if text else ""
     
-    # Команда смены языка
     if cmd in ("/lang", "/язык"):
         parts = text.split()
         if len(parts) > 1:
