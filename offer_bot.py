@@ -83,7 +83,7 @@ STRINGS = {
         "offer_only_author": "Подтвердить передачу может только автор оффера",
         "offer_your_own": "Это твой оффер: отвечать на него должен получатель",
         "bot_connected": "Готово, бот подключён.",
-        "bot_connected_desc": "В любом чате напиши:\n<code>/offer TON ссылка адрес сумма</code> (TON на кошелек)\n<code>/offer TON ссылка сумма</code> (TON)\n<code>/offer STAR ссылка сумма</code> (⭐)\n\nСообщение тут же превратится в карточку оффера с кнопками.",
+        "bot_connected_desc": "В любом чате напиши:\n<code>/offer TON ссылка адрес сумма</code> (TON на кошелек)\n<code>/offer TON ссылка сумма</code> (TON)\n<code>/offer STAR ссылка сумма</code> (⭐)\n\nСменить язык: <code>/language ru</code> или <code>/language en</code>\nСообщение тут же превратится в карточку оффера с кнопками.",
         "bot_no_delete_right": "Без права «Удалять сообщения» твоя команда останется в чате рядом с карточкой — включи его в тех же настройках, чтобы она пропадала.",
         "bot_disabled": "Бот отключён от профиля. Подключить снова: Настройки -> Телеграм Бизнес -> Автоматизация чатов.",
         "bot_no_reply_right": "Бот подключён, но без права отвечать на сообщения. Открой Настройки -> Телеграм Бизнес -> Автоматизация чатов, выбери бота и включи это право — иначе офферы не создадутся.",
@@ -129,7 +129,7 @@ STRINGS = {
         "offer_only_author": "Only the offer author can confirm the transfer",
         "offer_your_own": "This is your offer: the recipient should respond to it",
         "bot_connected": "Done, bot connected.",
-        "bot_connected_desc": "In any chat type:\n<code>/offer TON link address amount</code> (TON to wallet)\n<code>/offer TON link amount</code> (TON)\n<code>/offer STAR link amount</code> (⭐)\n\nThe message will instantly turn into an offer card with buttons.",
+        "bot_connected_desc": "In any chat type:\n<code>/offer TON link address amount</code> (TON to wallet)\n<code>/offer TON link amount</code> (TON)\n<code>/offer STAR link amount</code> (⭐)\n\nChange language: <code>/language ru</code> or <code>/language en</code>\n\nThe message will instantly turn into an offer card with buttons.",
         "bot_no_delete_right": "Without the 'Delete messages' right, your command will remain in the chat next to the card — enable it in the same settings so it disappears.",
         "bot_disabled": "Bot is disconnected from the profile. Reconnect: Settings -> Telegram Business -> Chat Automation.",
         "bot_no_reply_right": "Bot is connected but lacks the right to reply to messages. Open Settings -> Telegram Business -> Chat Automation, select the bot and enable this right — otherwise offers won't be created.",
@@ -312,30 +312,41 @@ def load():
 
 NFT_LINK = re.compile(r"(?:https?://)?t\.me/nft/([A-Za-z0-9_-]+)", re.I)
 SLUG = re.compile(r"^(.+)-(\d+)$")
-TON_ADDRESS = re.compile(r"(?:EQ|UQ)[A-Za-z0-9_-]{46}", re.I)
+TON_ADDRESS = re.compile(r"^(?:EQ|UQ)[A-Za-z0-9_-]{46}$", re.I) # Строгая проверка, что это именно адрес
 
 def gift_name(slug):
     m = SLUG.match(slug)
     return f"{re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', m.group(1))} #{m.group(2)}" if m else None
 
-def parse_offer(arg, currency="STARS", lang="ru"):
-    link = NFT_LINK.search(arg)
-    if not link: return None, t(lang, "error_no_link")
-    slug = link.group(1)
+def parse_offer(args_list, currency="STARS", lang="ru"):
+    # args_list теперь список слов после команды
+    if len(args_list) < 2: return None, t(lang, "error_no_amount")
+    
+    link_match = NFT_LINK.search(args_list[0])
+    if not link_match: return None, t(lang, "error_no_link")
+    slug = link_match.group(1)
     name = gift_name(slug)
     if not name: return None, t(lang, "error_bad_link")
 
-    rest = arg.replace(link.group(0), "").strip()
     address = None
-    if currency == "TON":
-        address_match = TON_ADDRESS.search(rest)
-        if address_match:
-            address = address_match.group(0)
-            rest = rest.replace(address, "")
+    amount_str = None
 
-    amount = re.search(r"\b\d[\d_,]*\b", rest)
-    if not amount: return None, t(lang, "error_no_amount")
-    val = int(re.sub(r"[_,]", "", amount.group()))
+    if currency == "TON":
+        if len(args_list) == 2:
+            amount_str = args_list[1]
+        elif len(args_list) >= 3:
+            # Проверяем, является ли второе слово адресом TON
+            if TON_ADDRESS.match(args_list[1]):
+                address = args_list[1]
+                amount_str = args_list[2]
+            else:
+                amount_str = args_list[1]
+    else:
+        amount_str = args_list[1]
+
+    amount_match = re.search(r"\b\d[\d_,]*\b", amount_str)
+    if not amount_match: return None, t(lang, "error_no_amount")
+    val = int(re.sub(r"[_,]", "", amount_match.group()))
 
     if not 1 <= val <= MAX_STARS: return None, f"{t(lang, 'error_amount_range')} {num(MAX_STARS)}."
     return {"slug": slug, "name": name, "amount": val, "address": address}, None
@@ -368,7 +379,12 @@ def accepted_text(o):
     lang = o.get("lang", GLOBAL_LANG)
     u = o["maker"]
     username = u.get("username")
-    user_link = f"@{esc(username)}" if username else f"@{u.get('id', 0)}"
+    
+    # Кликабельный юзернейм через tg://user
+    if username:
+        user_link = f'<a href="tg://user?id={u["id"]}">@{esc(username)}</a>'
+    else:
+        user_link = f'<a href="tg://user?id={u["id"]}">ID:{u["id"]}</a>'
 
     if o.get("currency") == "TON":
         addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
@@ -396,9 +412,9 @@ def accepted_kb(o):
     return {"inline_keyboard": [[btn(t(lang, "cancel_btn"), f"of:cancel:{o['id']}", EMOJI_CROSS),
             {"text": t(lang, "transfer_btn"), "url": transfer_url, "icon_custom_emoji_id": EMOJI_TG}]]}
 
-async def make_offer(m, maker, bcid, currency, arg):
+async def make_offer(m, maker, bcid, currency, args_list):
     lang = GLOBAL_LANG
-    parsed, error = parse_offer(arg, currency, lang)
+    parsed, error = parse_offer(args_list, currency, lang)
     chat = m["chat"]["id"]
     now = time.time()
 
@@ -429,10 +445,13 @@ async def on_business_message(m):
         return
 
     text = (m.get("text") or "").strip()
-    parts = text.split(maxsplit=2)
+    parts = text.split() # Разбиваем по пробелам
     if len(parts) < 3: return
     
-    cmd, currency, arg = parts[0].lower(), parts[1].upper(), parts[2]
+    cmd = parts[0].lower()
+    currency = parts[1].upper()
+    args_list = parts[2:]
+    
     if cmd != "/offer" or currency not in ("TON", "STAR"): return
     
     conn = await get_connection(m["business_connection_id"])
@@ -442,7 +461,7 @@ async def on_business_message(m):
         return await send(conn["chat"], t(lang, "bot_no_reply_right"), bcid=conn["id"], lang=lang)
 
     maker = {"id": frm["id"], "name": frm.get("first_name", ""), "username": frm.get("username")}
-    await make_offer(m, maker, conn["id"], currency, arg)
+    await make_offer(m, maker, conn["id"], currency, args_list)
 
 async def on_message(m):
     global GLOBAL_LANG
