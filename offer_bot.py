@@ -248,7 +248,7 @@ async def send(chat, text, kb=None, bcid=None, preview=False, lang=None):
         lang = GLOBAL_LANG
     text = style(text, lang)
     params = dict(chat_id=chat, text=text, parse_mode="HTML")
-    params["link_preview_options"] = {"is_disabled": not preview}
+    params["link_preview_options"] = {"is_disabled": not preview, "show_above_text": bool(preview)}
     if kb: params["reply_markup"] = kb
     if bcid: params["business_connection_id"] = bcid
     return await api("sendMessage", **params)
@@ -261,7 +261,7 @@ async def edit_offer(o, text, kb=None, preview=True):
     text = style(text, lang)
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
                   text=text, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
-    params["link_preview_options"] = {"is_disabled": not preview}
+    params["link_preview_options"] = {"is_disabled": not preview, "show_above_text": bool(preview)}
     res = await api("editMessageText", **params)
     if not res.get("ok") and "not modified" in (res.get("description") or "").lower():
         return {"ok": True}
@@ -510,6 +510,8 @@ async def on_callback(q):
     parts = q.get("data", "").split(":")
     is_offer_cb = len(parts) == 3 and parts[0] == "of"
 
+    # Callback'и по офферам (of:*) может нажимать ЛЮБОЙ пользователь.
+    # Whitelist проверяется только для остальных callback'ов.
     if not is_offer_cb and not is_allowed(frm.get("id")):
         return await api("answerCallbackQuery", callback_query_id=q["id"], text="Access denied", show_alert=True)
 
