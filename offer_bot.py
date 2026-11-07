@@ -312,43 +312,47 @@ def load():
 
 NFT_LINK = re.compile(r"(?:https?://)?t\.me/nft/([A-Za-z0-9_-]+)", re.I)
 SLUG = re.compile(r"^(.+)-(\d+)$")
-TON_ADDRESS = re.compile(r"^(?:EQ|UQ)[A-Za-z0-9_-]{46}$", re.I) # Строгая проверка, что это именно адрес
+TON_ADDRESS = re.compile(r"^(?:EQ|UQ)[A-Za-z0-9_-]{46}$", re.I)
 
 def gift_name(slug):
     m = SLUG.match(slug)
     return f"{re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', m.group(1))} #{m.group(2)}" if m else None
 
 def parse_offer(args_list, currency="STARS", lang="ru"):
-    # args_list теперь список слов после команды
-    if len(args_list) < 2: return None, t(lang, "error_no_amount")
-    
+    if len(args_list) < 2:
+        return None, t(lang, "error_no_amount")
+
     link_match = NFT_LINK.search(args_list[0])
-    if not link_match: return None, t(lang, "error_no_link")
+    if not link_match:
+        return None, t(lang, "error_no_link")
     slug = link_match.group(1)
     name = gift_name(slug)
-    if not name: return None, t(lang, "error_bad_link")
+    if not name:
+        return None, t(lang, "error_bad_link")
 
     address = None
     amount_str = None
 
     if currency == "TON":
-        if len(args_list) == 2:
-            amount_str = args_list[1]
-        elif len(args_list) >= 3:
-            # Проверяем, является ли второе слово адресом TON
-            if TON_ADDRESS.match(args_list[1]):
-                address = args_list[1]
-                amount_str = args_list[2]
-            else:
-                amount_str = args_list[1]
+        amount_str = args_list[-1]
+        middle = args_list[1:-1]
+        if middle:
+            address = middle[0].strip()
     else:
-        amount_str = args_list[1]
+        amount_str = args_list[-1]
 
-    amount_match = re.search(r"\b\d[\d_,]*\b", amount_str)
-    if not amount_match: return None, t(lang, "error_no_amount")
-    val = int(re.sub(r"[_,]", "", amount_match.group()))
+    amount_str = amount_str.strip()
+    if not amount_str.isdigit():
+        cleaned = re.sub(r"[_,\s]", "", amount_str)
+        if not cleaned.isdigit():
+            return None, t(lang, "error_no_amount")
+        amount_str = cleaned
 
-    if not 1 <= val <= MAX_STARS: return None, f"{t(lang, 'error_amount_range')} {num(MAX_STARS)}."
+    val = int(amount_str)
+
+    if not 1 <= val <= MAX_STARS:
+        return None, f"{t(lang, 'error_amount_range')} {num(MAX_STARS)}."
+
     return {"slug": slug, "name": name, "amount": val, "address": address}, None
 
 def maker_label(o):
@@ -379,8 +383,6 @@ def accepted_text(o):
     lang = o.get("lang", GLOBAL_LANG)
     u = o["maker"]
     username = u.get("username")
-    
-    # Кликабельный юзернейм через tg://user
     if username:
         user_link = f'<a href="tg://user?id={u["id"]}">@{esc(username)}</a>'
     else:
@@ -439,21 +441,21 @@ async def make_offer(m, maker, bcid, currency, args_list):
 async def on_business_message(m):
     frm = m.get("from") or {}
     user_id = frm.get("id")
-    
+
     if not is_allowed(user_id):
         log.warning("Denied access to business message from %s", user_id)
         return
 
     text = (m.get("text") or "").strip()
-    parts = text.split() # Разбиваем по пробелам
+    parts = text.split()
     if len(parts) < 3: return
-    
+
     cmd = parts[0].lower()
     currency = parts[1].upper()
     args_list = parts[2:]
-    
+
     if cmd != "/offer" or currency not in ("TON", "STAR"): return
-    
+
     conn = await get_connection(m["business_connection_id"])
     if not conn or user_id != conn["user_id"]: return
     if not (conn["enabled"] and conn["can_reply"]):
@@ -468,7 +470,7 @@ async def on_message(m):
     frm = m.get("from") or {}
     user_id = frm.get("id")
     chat = m["chat"]["id"]
-    
+
     if not is_allowed(user_id):
         await send(chat, t(GLOBAL_LANG, "no_access"), lang=GLOBAL_LANG)
         return
@@ -496,11 +498,11 @@ async def on_message(m):
     if cmd in ("/start", "/help"):
         copy_btn = {"text": t(GLOBAL_LANG, "copy_username"), "copy_text": {"text": f"@{bot_name}"}}
         if BUTTON_STYLE: copy_btn["style"] = BUTTON_STYLE
-        
+
         text_msg = (f"<b>{t(GLOBAL_LANG, 'hello')}</b>\n\n"
                     f"{t(GLOBAL_LANG, 'setup_instruction')}\n\n"
                     f"{t(GLOBAL_LANG, 'usage')}")
-                    
+
         await send(chat, text_msg, {"inline_keyboard": [[copy_btn]]}, lang=GLOBAL_LANG)
 
 async def on_callback(q):
@@ -512,7 +514,7 @@ async def on_callback(q):
     note = None
     o = offers.get(parts[2]) if len(parts) == 3 and parts[0] == "of" else None
     lang = o.get("lang", GLOBAL_LANG) if o else GLOBAL_LANG
-    
+
     if o is None:
         note = t(lang, "offer_outdated")
     else:
@@ -550,7 +552,7 @@ async def on_connection(c):
     if not is_allowed(conn["user_id"]):
         log.warning("Denied business connection from %s", conn["user_id"])
         return
-        
+
     connections[conn["id"]] = conn
     save()
     lang = GLOBAL_LANG
@@ -599,7 +601,7 @@ async def handle(update):
     try:
         if not _whitelist_ready and WHITELIST_URL:
             await fetch_whitelist()
-            
+
         if "business_connection" in update: await on_connection(update["business_connection"])
         elif "business_message" in update: await on_business_message(update["business_message"])
         elif "callback_query" in update: await on_callback(update["callback_query"])
@@ -642,10 +644,10 @@ async def main():
     me = (await api("getMe")).get("result") or {}
     if not me: raise SystemExit("BOT_TOKEN не подходит")
     bot_name = me["username"]
-    
+
     await fetch_whitelist()
     background(whitelist_worker())
-    
+
     await api("setMyCommands", commands=[{"command": "start", "description": "Start"}])
     await validate_connections()
     background(sweeper())
