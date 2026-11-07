@@ -384,7 +384,9 @@ async def make_offer(m, maker, bcid, currency, args_list):
     try: await delete_business_message(bcid, m["message_id"])
     except Exception: pass
 
-    if error: return await send(chat, f"{esc(error)}\n\n{t(lang, 'usage')}", bcid=bcid, preview=False, lang=lang)
+    if error: 
+        await asyncio.sleep(0.5)
+        return await send(chat, f"{esc(error)}\n\n{t(lang, 'usage')}", bcid=bcid, preview=False, lang=lang)
 
     o = {"id": uuid.uuid4().hex[:8], **parsed, "currency": currency, "bcid": bcid, "chat": chat, "mid": None,
          "maker": maker, "status": "pending", "created": now, "expires": now + OFFER_TTL, "lang": lang}
