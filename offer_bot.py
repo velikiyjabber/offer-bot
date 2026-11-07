@@ -248,7 +248,7 @@ async def send(chat, text, kb=None, bcid=None, preview=False, lang=None):
         lang = GLOBAL_LANG
     text = style(text, lang)
     params = dict(chat_id=chat, text=text, parse_mode="HTML")
-    params["link_preview_options"] = {"is_disabled": not preview, "show_above_text": bool(preview)}
+    params["link_preview_options"] = {"is_disabled": not preview}
     if kb: params["reply_markup"] = kb
     if bcid: params["business_connection_id"] = bcid
     return await api("sendMessage", **params)
@@ -261,7 +261,7 @@ async def edit_offer(o, text, kb=None, preview=True):
     text = style(text, lang)
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
                   text=text, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
-    params["link_preview_options"] = {"is_disabled": not preview, "show_above_text": bool(preview)}
+    params["link_preview_options"] = {"is_disabled": not preview}
     res = await api("editMessageText", **params)
     if not res.get("ok") and "not modified" in (res.get("description") or "").lower():
         return {"ok": True}
