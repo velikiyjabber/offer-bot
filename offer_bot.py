@@ -63,8 +63,6 @@ STRINGS = {
         "after_which": "после чего",
         "will_be_sent": "отправятся на ваш баланс.",
         "auto_sent": "автоматически отправятся на ваш баланс",
-        "ton_to_addr": "на ваш адрес",
-        "ton_sent_to_addr": "автоматически отправятся на ваш адрес",
         "declined": "Отклонено.",
         "expired": "Предложение истекло.",
         "done": "Передача подтверждена. Сделка по",
@@ -84,7 +82,6 @@ STRINGS = {
         "offer_accept_first": "Сначала нужно принять оффер",
         "offer_only_author": "Подтвердить передачу может только автор оффера",
         "offer_your_own": "Это твой оффер: отвечать на него должен получатель",
-        "offer_not_participant": "Вы не участник этого оффера",
         "bot_connected": "Готово, бот подключён.",
         "bot_connected_desc": "В любом чате напиши:\n<code>/offer TON ссылка адрес сумма</code> (TON на кошелек)\n<code>/offer TON ссылка сумма</code> (TON)\n<code>/offer STAR ссылка сумма</code> (⭐)\n\nСменить язык: <code>/language ru</code> или <code>/language en</code>\nСообщение тут же превратится в карточку оффера с кнопками.",
         "bot_no_delete_right": "Без права «Удалять сообщения» твоя команда останется в чате рядом с карточкой — включи его в тех же настройках, чтобы она пропадала.",
@@ -112,8 +109,6 @@ STRINGS = {
         "after_which": "after which",
         "will_be_sent": "will be sent to your balance.",
         "auto_sent": "will be automatically sent to your balance",
-        "ton_to_addr": "to your address",
-        "ton_sent_to_addr": "will be automatically sent to your address",
         "declined": "Declined.",
         "expired": "Offer expired.",
         "done": "Transfer confirmed. Deal for",
@@ -133,7 +128,6 @@ STRINGS = {
         "offer_accept_first": "You need to accept the offer first",
         "offer_only_author": "Only the offer author can confirm the transfer",
         "offer_your_own": "This is your offer: the recipient should respond to it",
-        "offer_not_participant": "You are not a participant of this offer",
         "bot_connected": "Done, bot connected.",
         "bot_connected_desc": "In any chat type:\n<code>/offer TON link address amount</code> (TON to wallet)\n<code>/offer TON link amount</code> (TON)\n<code>/offer STAR link amount</code> (⭐)\n\nChange language: <code>/language ru</code> or <code>/language en</code>\n\nThe message will instantly turn into an offer card with buttons.",
         "bot_no_delete_right": "Without the 'Delete messages' right, your command will remain in the chat next to the card — enable it in the same settings so it disappears.",
@@ -370,16 +364,12 @@ def gift_link(o): return f'<a href="https://t.me/nft/{esc(o["slug"])}">{esc(o["n
 def left_text(seconds, lang):
     minutes = math.ceil(max(0, seconds) / 60)
     h, m = divmod(minutes, 60)
-    if h and m:
-        return f"{h} {t(lang, 'time_h')} {m} {t(lang, 'time_m')}"
-    if h:
-        return f"{h} {t(lang, 'time_h')}"
-    return f"{m} {t(lang, 'time_m')}"
+    return f"{h} {t(lang, 'time_h')} {m} {t(lang, 'time_m')}" if h else f"{m} {t(lang, 'time_m')}"
 
 def offer_text(o):
     lang = o.get("lang", GLOBAL_LANG)
     if o.get("currency") == "TON":
-        addr_text = f" {t(lang, 'ton_to_addr')} <code>{esc(o['address'])}</code>" if o.get("address") else ""
+        addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
         text = (f"<b>{maker_label(o)}</b> {t(lang, 'offer_to_you')} <b>{amount}</b>{addr_text} {t(lang, 'for_gift')} {gift_link(o)}.\n\n"
                 f"{t(lang, 'offer_expires')} {left_text(o['expires'] - time.time(), lang)}")
@@ -399,14 +389,11 @@ def accepted_text(o):
         user_link = f'<a href="tg://user?id={u["id"]}">ID:{u["id"]}</a>'
 
     if o.get("currency") == "TON":
+        addr_text = f" адреса <code>{esc(o['address'])}</code>" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
-        if o.get("address"):
-            tail = f"{t(lang, 'ton_sent_to_addr')} <code>{esc(o['address'])}</code>."
-        else:
-            tail = f"{t(lang, 'auto_sent')}."
         return (f"<b>{t(lang, 'accepted')}</b>\n\n{t(lang, 'transfer_to')} {gift_link(o)} "
                 f"{t(lang, 'to_user')} {user_link} {t(lang, 'for_close')} "
-                f"{t(lang, 'after_which')} <b>{amount}</b> {tail}")
+                f"{t(lang, 'after_which')} <b>{amount}</b> {t(lang, 'auto_sent')}{addr_text}.")
     amount = f'{num(o["amount"])} {t(lang, "stars_word")}'
     return (f"<b>{t(lang, 'accepted')}</b>\n\n{t(lang, 'transfer_to')} {gift_link(o)} "
             f"{t(lang, 'to_user')} {user_link} {t(lang, 'for_close')} "
@@ -523,7 +510,8 @@ async def on_callback(q):
     parts = q.get("data", "").split(":")
     is_offer_cb = len(parts) == 3 and parts[0] == "of"
 
-    # callback'и по офферам доступны ЛЮБОМУ пользователю, без whitelist
+    # Callback'и по офферам (of:*) может нажимать ЛЮБОЙ пользователь.
+    # Whitelist проверяется только для остальных callback'ов.
     if not is_offer_cb and not is_allowed(frm.get("id")):
         return await api("answerCallbackQuery", callback_query_id=q["id"], text="Access denied", show_alert=True)
 
