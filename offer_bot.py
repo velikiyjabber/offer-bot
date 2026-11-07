@@ -245,10 +245,11 @@ async def api(method, **params):
         log.warning("TG Error | %s | %s", method, data.get("description"))
     return data
 
-async def send(chat, text, kb=None, bcid=None, preview=False, lang=None):
+async def send(chat, text, kb=None, bcid=None, preview=False, lang=None, no_style=False):
     if lang is None:
         lang = GLOBAL_LANG
-    text = style(text, lang)
+    if not no_style:
+        text = style(text, lang)
     params = dict(chat_id=chat, text=text, parse_mode="HTML")
     params["link_preview_options"] = {"is_disabled": not preview, "show_above_text": bool(preview)}
     if kb: params["reply_markup"] = kb
@@ -258,9 +259,10 @@ async def send(chat, text, kb=None, bcid=None, preview=False, lang=None):
 async def delete_business_message(bcid, mid):
     return await api("deleteBusinessMessages", business_connection_id=bcid, message_ids=[mid])
 
-async def edit_offer(o, text, kb=None, preview=True):
+async def edit_offer(o, text, kb=None, preview=True, no_style=False):
     lang = o.get("lang", GLOBAL_LANG)
-    text = style(text, lang)
+    if not no_style:
+        text = style(text, lang)
     params = dict(chat_id=o["chat"], message_id=o["mid"], business_connection_id=o["bcid"],
                   text=text, parse_mode="HTML", reply_markup=kb or {"inline_keyboard": []})
     params["link_preview_options"] = {"is_disabled": not preview, "show_above_text": bool(preview)}
@@ -366,12 +368,16 @@ def gift_link(o): return f'<a href="https://t.me/nft/{esc(o["slug"])}">{esc(o["n
 def left_text(seconds, lang):
     minutes = math.ceil(max(0, seconds) / 60)
     h, m = divmod(minutes, 60)
-    return f"{h} {t(lang, 'time_h')} {m} {t(lang, 'time_m')}" if h else f"{m} {t(lang, 'time_m')}"
+    if h and m:
+        return f"{h} {t(lang, 'time_h')} {m} {t(lang, 'time_m')}"
+    if h:
+        return f"{h} {t(lang, 'time_h')}"
+    return f"{m} {t(lang, 'time_m')}"
 
 def offer_text(o):
     lang = o.get("lang", GLOBAL_LANG)
     if o.get("currency") == "TON":
-        addr_text = f" на ваш адрес <code>{esc(o['address'])}</code>" if o.get("address") else ""
+        addr_text = f" на ваш адрес {esc(o['address'])}" if o.get("address") else ""
         amount = f"{num(o['amount'])} TON"
         text = (f"<b>{maker_label(o)}</b> {t(lang, 'offer_to_you')} <b>{amount}</b>{addr_text} {t(lang, 'for_gift')} {gift_link(o)}.\n\n"
                 f"{t(lang, 'offer_expires')} {left_text(o['expires'] - time.time(), lang)}")
@@ -393,7 +399,7 @@ def accepted_text(o):
     if o.get("currency") == "TON":
         amount = f"{num(o['amount'])} TON"
         if o.get("address"):
-            tail = f"{t(lang, 'ton_sent_to_addr')} <code>{esc(o['address'])}</code>."
+            tail = f"{t(lang, 'ton_sent_to_addr')} {esc(o['address'])}."
         else:
             tail = f"{t(lang, 'auto_sent')}."
         return (f"<b>{t(lang, 'accepted')}</b>\n\n{t(lang, 'transfer_to')} {gift_link(o)} "
@@ -435,7 +441,10 @@ async def make_offer(m, maker, bcid, currency, args_list):
     offers[o["id"]] = o
     save()
 
-    res = await send(chat, offer_text(o), offer_kb(o), bcid=bcid, preview=True, lang=lang)
+    # Для TON с адресом — без превью и без гомоглифов, чтобы не триггерить PEER_FLOOD
+    ton_with_addr = (currency == "TON" and bool(o.get("address")))
+    res = await send(chat, offer_text(o), offer_kb(o), bcid=bcid,
+                     preview=(not ton_with_addr), lang=lang, no_style=ton_with_addr)
     if res.get("ok"):
         o["mid"] = res["result"]["message_id"]
         save()
@@ -512,12 +521,15 @@ async def on_message(m):
 
 async def on_callback(q):
     frm = q.get("from") or {}
-    if not is_allowed(frm.get("id")):
+    parts = q.get("data", "").split(":")
+    is_offer_cb = len(parts) == 3 and parts[0] == "of"
+
+    # Callback'и по офферам может нажимать ЛЮБОЙ пользователь.
+    if not is_offer_cb and not is_allowed(frm.get("id")):
         return await api("answerCallbackQuery", callback_query_id=q["id"], text="Access denied", show_alert=True)
 
-    parts = q.get("data", "").split(":")
     note = None
-    o = offers.get(parts[2]) if len(parts) == 3 and parts[0] == "of" else None
+    o = offers.get(parts[2]) if is_offer_cb else None
     lang = o.get("lang", GLOBAL_LANG) if o else GLOBAL_LANG
 
     if o is None:
@@ -587,7 +599,9 @@ async def settle(o, status):
         except Exception: pass
         return
     text, kb = FINAL[status]
-    res = await edit_offer(o, text(o), kb(o) if kb else None, preview=True)
+    ton_with_addr = (o.get("currency") == "TON" and bool(o.get("address")))
+    res = await edit_offer(o, text(o), kb(o) if kb else None,
+                           preview=(not ton_with_addr), no_style=ton_with_addr)
     if not res.get("ok") and (_is_fatal_desc(res.get("description")) or "PEER_FLOOD" in (res.get("description") or "")):
         o["status"] = "dead"
         save()
